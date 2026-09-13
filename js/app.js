@@ -287,7 +287,7 @@
         finishMapObj.addLayer({
           id: 'finish-route-line', type: 'line', source: 'finish-route',
           layout: { 'line-cap': 'round', 'line-join': 'round' },
-          paint: { 'line-color': '#1D9E75', 'line-width': 4 },
+          paint: { 'line-color': '#2BD97C', 'line-width': 4 },
         });
         finishMapObj.fitBounds(
           [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
@@ -309,7 +309,7 @@
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       }).join(' ');
       chartContainer.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
-        <polyline points="${pts}" fill="none" stroke="#1D9E75" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+        <polyline points="${pts}" fill="none" stroke="#2BD97C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
       </svg>`;
     }
 
@@ -425,12 +425,36 @@
   /* ---------------- 1-1. 홈 화면 ---------------- */
   async function loadHomeScreen() {
     if (!currentUser) return;
+    renderHomeHero();
     try {
       const runs = await Auth.listRuns(currentUser.uid, 20);
       renderHomeMap(runs);
       renderPaceChart(runs);
       renderRunHistoryList(runs);
     } catch (err) { console.warn(err); }
+  }
+
+  function renderHomeHero() {
+    const hour = new Date().getHours();
+    const name = cachedProfile?.name ? `${cachedProfile.name}님, ` : '';
+    let greeting = `${name}오늘도 좋은 하루예요`;
+    if (hour < 11) greeting = `${name}상쾌한 아침이에요`;
+    else if (hour < 17) greeting = `${name}오늘도 달려볼까요`;
+    else greeting = `${name}오늘 하루도 수고했어요`;
+    $('home-greeting').textContent = greeting;
+
+    const goalKm = cachedProfile?.goalKm;
+    const doneKm = cachedProfile?.distanceRunKm || 0;
+    if (!goalKm) {
+      $('home-goal-num').innerHTML = `${doneKm.toFixed(1)}<span>km 누적</span>`;
+      $('home-goal-pct').textContent = '';
+      $('home-goal-bar').style.width = '0%';
+      return;
+    }
+    const pct = Math.min(Math.round((doneKm / goalKm) * 100), 100);
+    $('home-goal-num').innerHTML = `${doneKm.toFixed(1)}<span>/ ${goalKm}km</span>`;
+    $('home-goal-pct').textContent = `${pct}%`;
+    $('home-goal-bar').style.width = `${pct}%`;
   }
 
   function renderHomeMap(runs) {
@@ -474,7 +498,7 @@
         type: 'line',
         source: 'past-runs',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#1D9E75', 'line-width': 3, 'line-opacity': 0.85 },
+        paint: { 'line-color': '#2BD97C', 'line-width': 3, 'line-opacity': 0.85 },
       });
       homeMapObj.fitBounds(
         [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
@@ -499,7 +523,7 @@
       return `${x.toFixed(1)},${y.toFixed(1)}`;
     }).join(' ');
     container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
-      <polyline points="${pts}" fill="none" stroke="#1D9E75" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      <polyline points="${pts}" fill="none" stroke="#2BD97C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
     </svg>`;
   }
 

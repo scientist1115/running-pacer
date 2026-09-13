@@ -239,7 +239,7 @@ const RouteEngine = (() => {
         type: 'line',
         source: 'run-pacer-route',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#1D9E75', 'line-width': 6 },
+        paint: { 'line-color': '#2BD97C', 'line-width': 6 },
       });
     });
 
