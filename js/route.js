@@ -193,8 +193,8 @@ const RouteEngine = (() => {
       container: containerEl,
       style: 'https://tiles.openfreemap.org/styles/bright',
       center: [start.lng, start.lat],
-      zoom: 19,
-      pitch: 78,
+      zoom: 18.3,
+      pitch: 82,
       maxPitch: 85,
       bearing: initialBearing,
       attributionControl: true,
@@ -227,9 +227,9 @@ const RouteEngine = (() => {
         minzoom: 14,
         paint: {
           'fill-extrusion-color': '#2a3b33',
-          'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['coalesce', ['get', 'render_height'], 8]],
+          'fill-extrusion-height': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['*', ['coalesce', ['get', 'render_height'], 14], 1.6]],
           'fill-extrusion-base': ['interpolate', ['linear'], ['zoom'], 15, 0, 15.05, ['coalesce', ['get', 'render_min_height'], 0]],
-          'fill-extrusion-opacity': 0.85,
+          'fill-extrusion-opacity': 0.9,
         },
       }, labelLayerId);
 
