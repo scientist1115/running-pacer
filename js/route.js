@@ -1,35 +1,46 @@
 // 경로 요청, 횡단보도 최소화 스코어링(추후 확장), SVG 위에 경로 그리기
 const RouteEngine = (() => {
 
+  // 지정한 시간(ms) 안에 안 끝나면 포기하는 fetch (느린 외부 API 때문에 전체가 멈추지 않게)
+  async function fetchWithTimeout(url, options, ms) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async function fetchWalkRoute(start, end) {
     // start/end: {lat, lng}
-    const res = await fetch('/api/tmap-route', {
+    const res = await fetchWithTimeout('/api/tmap-route', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ start, end }),
-    });
+    }, 8000);
     if (!res.ok) throw new Error('경로를 못 가져왔어요');
     return res.json(); // { points: [{lat,lng}, ...], distanceMeters, turns: [...] }
   }
 
   async function searchNearby(keyword, center) {
-    const res = await fetch('/api/kakao-search', {
+    const res = await fetchWithTimeout('/api/kakao-search', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ keyword, lat: center.lat, lng: center.lng }),
-    });
+    }, 6000);
     if (!res.ok) throw new Error('주변 검색에 실패했어요');
     return res.json(); // [{name, lat, lng}, ...]
   }
 
-  // 경로 좌표 근처 횡단보도 개수 (전국횡단보도표준데이터)
+  // 경로 좌표 근처 횡단보도 개수 (전국횡단보도표준데이터) - 느리면 0점 처리하고 넘어감
   async function countCrosswalksNear(routePoints) {
     try {
-      const res = await fetch('/api/crosswalk-count', {
+      const res = await fetchWithTimeout('/api/crosswalk-count', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ points: routePoints }),
-      });
+      }, 5000);
       if (!res.ok) return 0;
       const data = await res.json();
       return data.count || 0;
@@ -38,14 +49,14 @@ const RouteEngine = (() => {
     }
   }
 
-  // 경로 주변 도로의 나쁜 노면(모래/흙/자갈 등) 개수 (OpenStreetMap)
+  // 경로 주변 도로의 나쁜 노면(모래/흙/자갈 등) 개수 (OpenStreetMap) - 느리면 0점 처리하고 넘어감
   async function countBadSurfaceNear(routePoints) {
     try {
-      const res = await fetch('/api/surface-check', {
+      const res = await fetchWithTimeout('/api/surface-check', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ points: routePoints }),
-      });
+      }, 5000);
       if (!res.ok) return 0;
       const data = await res.json();
       return data.badSurfaceCount || 0;
@@ -54,20 +65,17 @@ const RouteEngine = (() => {
     }
   }
 
-  // 후보 경로 여러 개 중 횡단보도+나쁜 노면이 가장 적은 걸 고름 (횡단보도를 더 무겁게 반영)
+  // 후보 경로 여러 개 중 횡단보도+나쁜 노면이 가장 적은 걸 고름 (전부 병렬로 채점)
   async function pickBestRoute(candidates) {
-    let best = candidates[0];
-    let bestScore = Infinity;
-    for (const c of candidates) {
+    const scored = await Promise.all(candidates.map(async (c) => {
       const [crosswalks, badSurface] = await Promise.all([
         countCrosswalksNear(c.points),
         countBadSurfaceNear(c.points),
       ]);
-      const score = crosswalks * 2 + badSurface;
-      c._score = score; // 디버깅/표시용으로 남겨둠
-      if (score < bestScore) { bestScore = score; best = c; }
-    }
-    return best;
+      return { c, score: crosswalks * 2 + badSurface };
+    }));
+    scored.sort((a, b) => a.score - b.score);
+    return scored[0].c;
   }
 
   // 목적지 + 목표거리: 직선 경로가 짧으면 근처 공원 후보 몇 곳을 경유하는 경로를 만들어서
@@ -80,19 +88,23 @@ const RouteEngine = (() => {
     const parks = await searchNearby('공원', start).catch(() => []);
     if (parks.length === 0) return direct;
 
-    const candidates = [];
-    for (const via of parks.slice(0, 3)) {
+    const results = await Promise.all(parks.slice(0, 2).map(async (via) => {
       try {
-        const leg1 = await fetchWalkRoute(start, { lat: via.lat, lng: via.lng });
-        const leg2 = await fetchWalkRoute({ lat: via.lat, lng: via.lng }, dest);
-        candidates.push({
+        const [leg1, leg2] = await Promise.all([
+          fetchWalkRoute(start, { lat: via.lat, lng: via.lng }),
+          fetchWalkRoute({ lat: via.lat, lng: via.lng }, dest),
+        ]);
+        return {
           points: [...leg1.points, ...leg2.points],
           distanceMeters: leg1.distanceMeters + leg2.distanceMeters,
           turns: [...(leg1.turns || []), ...(leg2.turns || [])],
           via: via.name,
-        });
-      } catch { /* 이 후보는 건너뜀 */ }
-    }
+        };
+      } catch {
+        return null;
+      }
+    }));
+    const candidates = results.filter(Boolean);
     if (candidates.length === 0) return direct;
 
     // 목표거리를 채우는 후보들 중에서 고르고, 하나도 없으면 그나마 가장 긴 걸로
@@ -106,19 +118,21 @@ const RouteEngine = (() => {
     const parks = await searchNearby('공원', start).catch(() => []);
     if (parks.length === 0) throw new Error('근처에 추천할 만한 공원을 못 찾았어요');
 
-    const candidates = [];
-    for (const turnaround of parks.slice(0, 3)) {
+    const results = await Promise.all(parks.slice(0, 2).map(async (turnaround) => {
       try {
         const out = await fetchWalkRoute(start, { lat: turnaround.lat, lng: turnaround.lng });
         const backPoints = [...out.points].reverse(); // 왕복이니 갔던 길 그대로 되돌아옴
-        candidates.push({
+        return {
           points: [...out.points, ...backPoints],
           distanceMeters: out.distanceMeters * 2,
           turns: out.turns || [], // 복귀 구간은 반대 방향이라 회전 안내는 갈 때 것만 사용
           via: turnaround.name,
-        });
-      } catch { /* 이 후보는 건너뜀 */ }
-    }
+        };
+      } catch {
+        return null;
+      }
+    }));
+    const candidates = results.filter(Boolean);
     if (candidates.length === 0) throw new Error('경로를 만들 수 없었어요');
 
     // 목표거리(±20%)에 맞는 후보들 중에서 고르고, 없으면 거리가 제일 가까운 걸로

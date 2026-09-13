@@ -18,6 +18,10 @@
   let faceMarkerObj = null;  // MapLibre 마커 (얼굴 사진 + 방향 화살표)
   let currentBearing = 0;    // 현재 진행 방향(도) - 지도 회전 기준
   let homeMapObj = null;     // 홈 화면 지도(지난 경로 겹쳐보기) MapLibre 인스턴스
+  let finishMapObj = null;   // 완료 화면 지도 MapLibre 인스턴스
+  let paceSplits = [];       // 이번 러닝의 구간별 페이스 기록 (완료 화면 그래프용)
+  let lastSplitMeters = 0;
+  let lastSplitTime = 0;
 
   const $ = (id) => document.getElementById(id);
   function showScreen(id) {
@@ -130,6 +134,9 @@
     goalCountedForThisRun = false;
     announcedTurnCount = 0;
     faceMarkerObj = null;
+    paceSplits = [];
+    lastSplitMeters = 0;
+    lastSplitTime = Date.now();
 
     navigator.geolocation.getCurrentPosition(async (pos) => {
       const start = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -198,6 +205,15 @@
     lastPos = cur;
     Music.onSpeedUpdate(speed);
 
+    // 250m마다 그 구간 페이스를 기록해서 완료 화면 그래프에 씀
+    if (traveledMeters - lastSplitMeters >= 250) {
+      const segKm = (traveledMeters - lastSplitMeters) / 1000;
+      const segMin = (Date.now() - lastSplitTime) / 60000;
+      if (segKm > 0 && segMin > 0) paceSplits.push(segMin / segKm);
+      lastSplitMeters = traveledMeters;
+      lastSplitTime = Date.now();
+    }
+
     const progress = route ? Math.min(traveledMeters / route.distanceMeters, 1) : 0;
     updateMarker(progress, currentBearing, isMoving);
     updateStats(progress, speed);
@@ -210,12 +226,13 @@
     }
   }
 
-  // 러닝 완료 처리: 누적거리/기록 저장하고 잠시 후 홈 화면으로 이동
+  // 러닝 완료 처리: 누적거리/기록 저장하고 완료 요약 화면을 보여줌
   // manual=true면 목표거리 도착 전에 사용자가 직접 "종료하기"를 누른 경우
   function finishRun(manual) {
     if (watchId) navigator.geolocation.clearWatch(watchId);
     const km = traveledMeters / 1000;
-    const elapsedMin = (Date.now() - startedAt) / 60000;
+    const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
+    const elapsedMin = elapsedSec / 60;
     const paceMinPerKm = km > 0.05 ? elapsedMin / km : 0;
 
     if (currentUser && km > 0.02) {
@@ -227,7 +244,7 @@
       Auth.saveRun(currentUser.uid, {
         points: route?.points || [],
         distanceKm: km,
-        durationSec: Math.round((Date.now() - startedAt) / 1000),
+        durationSec: elapsedSec,
         paceMinPerKm,
       }).catch(console.warn);
     }
@@ -235,10 +252,68 @@
     announce(manual ? '러닝을 종료했어요. 수고했어요.' : '목표 거리에 도착했어요! 수고했어요.');
     Music.pause();
 
-    setTimeout(() => {
-      showScreen('screen-home');
-      loadHomeScreen();
-    }, manual ? 800 : 3000);
+    showFinishScreen({ km, elapsedSec, paceMinPerKm });
+  }
+
+  function showFinishScreen({ km, elapsedSec, paceMinPerKm }) {
+    $('finish-title').textContent = '오늘의 러닝 완료!';
+    $('finish-distance').textContent = km.toFixed(2) + 'km';
+    const min = Math.floor(elapsedSec / 60), sec = elapsedSec % 60;
+    $('finish-duration').textContent = `${min}:${sec.toString().padStart(2, '0')}`;
+    if (paceMinPerKm > 0) {
+      const pMin = Math.floor(paceMinPerKm);
+      const pSec = Math.round((paceMinPerKm - pMin) * 60);
+      $('finish-pace').textContent = `${pMin}'${pSec.toString().padStart(2, '0')}"`;
+    } else {
+      $('finish-pace').textContent = '-';
+    }
+
+    // 오늘 뛴 경로 지도로 보여주기
+    const container = $('finish-map');
+    if (finishMapObj) { finishMapObj.remove(); finishMapObj = null; }
+    container.innerHTML = '';
+    if (route?.points?.length > 1) {
+      const coords = route.points.map((p) => [p.lng, p.lat]);
+      const lons = coords.map((c) => c[0]), lats = coords.map((c) => c[1]);
+      finishMapObj = new maplibregl.Map({
+        container, style: 'https://tiles.openfreemap.org/styles/bright',
+        center: coords[0], zoom: 14, pitch: 0, interactive: false, attributionControl: false,
+      });
+      finishMapObj.on('load', () => {
+        finishMapObj.addSource('finish-route', {
+          type: 'geojson',
+          data: { type: 'Feature', geometry: { type: 'LineString', coordinates: coords } },
+        });
+        finishMapObj.addLayer({
+          id: 'finish-route-line', type: 'line', source: 'finish-route',
+          layout: { 'line-cap': 'round', 'line-join': 'round' },
+          paint: { 'line-color': '#1D9E75', 'line-width': 4 },
+        });
+        finishMapObj.fitBounds(
+          [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
+          { padding: 24, duration: 0 }
+        );
+      });
+    }
+
+    // 오늘 페이스 변화 그래프 (250m 구간별)
+    const chartContainer = $('finish-pace-chart');
+    if (paceSplits.length < 2) {
+      chartContainer.innerHTML = '<p class="onboard-sub" style="padding:8px 0;">그래프를 그리기엔 너무 짧게 뛰었어요</p>';
+    } else {
+      const minP = Math.min(...paceSplits), maxP = Math.max(...paceSplits);
+      const W = 300, H = 100, PAD = 10;
+      const pts = paceSplits.map((p, i) => {
+        const x = PAD + (i / (paceSplits.length - 1)) * (W - PAD * 2);
+        const y = maxP === minP ? H / 2 : PAD + ((p - minP) / (maxP - minP)) * (H - PAD * 2);
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      }).join(' ');
+      chartContainer.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
+        <polyline points="${pts}" fill="none" stroke="#1D9E75" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>`;
+    }
+
+    showScreen('screen-finish');
   }
 
   // 다음 회전 지점에 가까워지면 그 안내 문구를 말해줌 (Tmap이 준 turns 좌표 기준)
@@ -603,6 +678,10 @@
       if (goalCountedForThisRun) return; // 이미 도착 처리로 종료 중이면 중복 방지
       goalCountedForThisRun = true;
       finishRun(true);
+    });
+    $('btn-finish-home').addEventListener('click', () => {
+      showScreen('screen-home');
+      loadHomeScreen();
     });
 
     $('btn-add-music').addEventListener('click', () => $('music-file-input').click());

@@ -103,7 +103,7 @@ html, body {
 #voice-caption .label { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
 #voice-caption .text { font-size: 22px; font-weight: 600; line-height: 1.35; }
 
-#stat-row {
+.stat-row-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 8px;

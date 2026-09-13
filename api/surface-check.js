@@ -1,4 +1,10 @@
 // OpenStreetMap Overpass API로 경로 주변 도로의 surface 태그를 확인 (무료, 키 불필요)
+function fetchWithTimeout(url, options, ms) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 module.exports = async (req, res) => {
   if (req.method !== 'POST') return res.status(405).json({ error: 'POST만 지원해요' });
   try {
@@ -14,11 +20,12 @@ module.exports = async (req, res) => {
 
     const query = `[out:json][timeout:15];way["highway"](${south},${west},${north},${east});out tags;`;
 
-    const overpassRes = await fetch('https://overpass-api.de/api/interpreter', {
+    // Overpass 공용 서버는 혼잡할 때 매우 느릴 수 있어서, 4초 넘으면 그냥 0으로 처리
+    const overpassRes = await fetchWithTimeout('https://overpass-api.de/api/interpreter', {
       method: 'POST',
       headers: { 'Content-Type': 'text/plain' },
       body: query,
-    });
+    }, 4000);
     const data = await overpassRes.json();
 
     // 러너가 피하고 싶을 만한 노면 재질

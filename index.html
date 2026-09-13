@@ -157,12 +157,26 @@
       <div class="label">음성 안내</div>
       <div class="text" id="voice-caption-text">경로를 준비하고 있어요…</div>
     </div>
-    <div id="stat-row">
+    <div id="stat-row" class="stat-row-grid">
       <div class="stat-card"><div class="label">남은거리</div><div class="value" id="stat-distance">-</div></div>
       <div class="stat-card"><div class="label">페이스</div><div class="value" id="stat-pace">-</div></div>
       <div class="stat-card"><div class="label">도착예정</div><div class="value" id="stat-eta">-</div></div>
     </div>
     <button id="btn-end-run" class="btn-secondary" style="margin: 10px 16px 16px;">🛑 러닝 종료하기</button>
+  </section>
+
+  <!-- 3-1. 러닝 완료 요약: 오늘 경로 + 페이스 그래프 -->
+  <section id="screen-finish" class="screen">
+    <p class="onboard-title" id="finish-title">러닝 완료!</p>
+    <div id="finish-map" style="width:100%; height:180px; border-radius:14px; overflow:hidden; background:#0f1c16;"></div>
+    <div id="finish-stat-row" class="stat-row-grid" style="margin-top:14px;">
+      <div class="stat-card"><div class="label">거리</div><div class="value" id="finish-distance">-</div></div>
+      <div class="stat-card"><div class="label">시간</div><div class="value" id="finish-duration">-</div></div>
+      <div class="stat-card"><div class="label">평균 페이스</div><div class="value" id="finish-pace">-</div></div>
+    </div>
+    <p class="onboard-sub" style="margin: 18px 0 6px;">오늘 페이스 변화</p>
+    <div id="finish-pace-chart" style="width:100%; height:100px;"></div>
+    <button id="btn-finish-home" class="btn-primary" style="margin-top: 20px;">홈으로</button>
   </section>
 
 </div>
