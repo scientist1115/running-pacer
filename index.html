@@ -195,6 +195,11 @@
     <button id="btn-profile-close" class="btn-secondary" style="margin-top: 20px;">닫기</button>
   </section>
 
+  <!-- 2-2. 카운트다운 (3-2-1) -->
+  <section id="screen-countdown" class="screen" style="align-items:center; justify-content:center;">
+    <div id="countdown-num">3</div>
+  </section>
+
   <!-- 3. 러닝 화면 -->
   <section id="screen-run" class="screen">
     <div id="map-area">
@@ -208,10 +213,13 @@
       <div class="label">음성 안내</div>
       <div class="text" id="voice-caption-text">경로를 준비하고 있어요…</div>
     </div>
-    <div id="stat-row" class="stat-row-grid">
-      <div class="stat-card"><div class="label">남은거리</div><div class="value" id="stat-distance">-</div></div>
-      <div class="stat-card"><div class="label">페이스</div><div class="value" id="stat-pace">-</div></div>
-      <div class="stat-card"><div class="label">도착예정</div><div class="value" id="stat-eta">-</div></div>
+    <div id="hero-panel">
+      <div class="hero-label">페이스</div>
+      <div class="hero-value" id="stat-pace">-'--"</div>
+      <div class="hero-sub-row">
+        <div class="hero-sub-item"><span id="stat-distance">-</span><label>남은거리</label></div>
+        <div class="hero-sub-item"><span id="stat-eta">-</span><label>도착예정</label></div>
+      </div>
     </div>
     <button id="btn-end-run" class="btn-secondary" style="margin: 10px 16px 16px;">
       <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>

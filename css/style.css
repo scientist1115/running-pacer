@@ -196,6 +196,37 @@ html, body {
 #voice-caption .label { font-size: 11px; font-weight: 700; letter-spacing: 0.04em; color: var(--go); margin-bottom: 6px; }
 #voice-caption .text { font-size: 21px; font-weight: 600; line-height: 1.35; }
 
+/* 러닝 화면 하단 - 페이스를 큰 색 블록으로 강조 */
+#hero-panel {
+  background: var(--go);
+  color: #06140f;
+  padding: 18px 20px 20px;
+  text-align: center;
+}
+#hero-panel .hero-label { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; opacity: 0.7; }
+#hero-panel .hero-value {
+  font-family: var(--font-display);
+  font-size: 76px;
+  line-height: 1;
+  margin: 2px 0 14px;
+}
+#hero-panel .hero-sub-row {
+  display: flex; justify-content: center; gap: 40px;
+}
+#hero-panel .hero-sub-item span {
+  display: block; font-family: var(--font-display); font-size: 24px; line-height: 1;
+}
+#hero-panel .hero-sub-item label { font-size: 11px; font-weight: 700; opacity: 0.65; }
+
+/* 카운트다운 (3-2-1) */
+#screen-countdown { background: var(--ink); }
+#countdown-num {
+  font-family: var(--font-display);
+  font-size: 140px;
+  color: var(--go);
+  line-height: 1;
+}
+
 .stat-row-grid {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -303,9 +334,14 @@ html, body {
 
 /* ---------- 지난 기록 목록 ---------- */
 .run-history-item {
-  display: flex; justify-content: space-between; align-items: center;
+  display: flex; align-items: center; gap: 10px;
   padding: 11px 0; border-bottom: 1px solid var(--line); font-size: 13.5px;
 }
 .run-history-item:last-child { border-bottom: none; }
-.run-history-item .date { color: var(--mute); font-size: 11.5px; font-weight: 600; }
+.run-history-item .run-icon {
+  width: 28px; height: 28px; border-radius: 50%; background: var(--go);
+  color: #06140f; display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.run-history-item .run-icon svg { width: 13px; height: 13px; }
+.run-history-item .date { color: var(--mute); font-size: 11.5px; font-weight: 600; flex: 1; }
 .run-history-item .stats { text-align: right; font-weight: 600; }

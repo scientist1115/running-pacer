@@ -127,7 +127,23 @@
       announce('잘 못 들었어요. 다시 한 번 말해주세요.');
       return;
     }
-    beginRun(cmd);
+    runCountdown(cmd);
+  }
+
+  // 러닝 시작 전 3-2-1 카운트다운을 보여준 다음 실제로 시작함
+  function runCountdown(cmd) {
+    showScreen('screen-countdown');
+    let n = 3;
+    $('countdown-num').textContent = n;
+    const timer = setInterval(() => {
+      n -= 1;
+      if (n > 0) {
+        $('countdown-num').textContent = n;
+      } else {
+        clearInterval(timer);
+        beginRun(cmd);
+      }
+    }, 700);
   }
 
   // 실제 나침반(자기센서) 방향을 읽어서, 가만히 서서 몸만 돌려도 지도가 같이 돌게 함
@@ -589,7 +605,10 @@
       const paceStr = r.paceMinPerKm
         ? `${Math.floor(r.paceMinPerKm)}'${Math.round((r.paceMinPerKm % 1) * 60).toString().padStart(2, '0')}"/km`
         : '-';
-      row.innerHTML = `<span class="date">${dateStr}</span><span class="stats">${(r.distanceKm || 0).toFixed(1)}km · ${paceStr}</span>`;
+      row.innerHTML = `
+        <span class="run-icon"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg></span>
+        <span class="date">${dateStr}</span>
+        <span class="stats">${(r.distanceKm || 0).toFixed(1)}km · ${paceStr}</span>`;
       container.appendChild(row);
     });
   }
@@ -743,9 +762,9 @@
       requestCompassPermission();
       const destination = prompt('목적지 (없으면 비워두기)') || null;
       const distance = parseFloat(prompt('거리(km)')) || null;
-      if (destination && distance) beginRun({ type: 'destination_with_distance', destination, distance });
-      else if (distance) beginRun({ type: 'distance_only', distance });
-      else if (destination) beginRun({ type: 'destination_only', destination });
+      if (destination && distance) runCountdown({ type: 'destination_with_distance', destination, distance });
+      else if (distance) runCountdown({ type: 'distance_only', distance });
+      else if (destination) runCountdown({ type: 'destination_only', destination });
     });
 
     $('mic-btn').addEventListener('click', () => Voice.listenOnce(handleRunVoice));
