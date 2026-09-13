@@ -1,0 +1,208 @@
+:root {
+  --bg: #0b1410;
+  --surface: #12201a;
+  --accent: #1D9E75;
+  --accent-light: #5DCAA5;
+  --text: #f4f7f5;
+  --text-dim: #9fb0a8;
+  --danger: #e24b4a;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, "Pretendard", "Apple SD Gothic Neo", sans-serif;
+  height: 100%;
+  overflow: hidden;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+#app { height: 100vh; display: flex; flex-direction: column; }
+
+#goal-header {
+  flex-shrink: 0;
+  text-align: center;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-light);
+  background: #0f1c16;
+  border-bottom: 1px solid #1c2b23;
+}
+
+/* ---------- 온보딩 (셀카 촬영) ---------- */
+.screen {
+  display: none;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  padding: 24px;
+}
+.screen.active { display: flex; }
+
+.onboard-title { font-size: 22px; font-weight: 600; margin: 12px 0 4px; }
+.onboard-sub { font-size: 15px; color: var(--text-dim); margin-bottom: 20px; line-height: 1.5; }
+
+#camera-preview, #selfie-canvas {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  border-radius: 50%;
+  object-fit: cover;
+  background: #000;
+  margin: 0 auto 20px;
+  display: block;
+  max-width: 280px;
+}
+
+.btn-primary, .btn-secondary {
+  font-size: 18px;
+  font-weight: 600;
+  padding: 18px;
+  border-radius: 16px;
+  border: none;
+  width: 100%;
+  margin-top: 10px;
+}
+.btn-primary { background: var(--accent); color: #06140f; }
+.btn-secondary { background: transparent; color: var(--text); border: 1px solid #2a3b33; }
+
+/* ---------- 메인 러닝 화면 (MapLibre 3D 지도) ---------- */
+#map-area { flex: 1; position: relative; background: var(--surface); overflow: hidden; }
+#map-canvas { position: absolute; inset: 0; width: 100%; height: 100%; background: var(--surface); }
+
+.face-marker-wrap { display: flex; flex-direction: column; align-items: center; }
+.face-marker-arrow {
+  width: 0; height: 0;
+  border-left: 9px solid transparent;
+  border-right: 9px solid transparent;
+  border-bottom: 14px solid var(--accent);
+  margin-bottom: -4px;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.4));
+}
+.face-marker-inner {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  border: 3px solid var(--accent);
+  background-size: cover;
+  background-position: center;
+  background-color: #0f1c16;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+}
+
+#voice-caption {
+  background: var(--surface);
+  padding: 18px 20px;
+  border-top: 1px solid #1c2b23;
+}
+#voice-caption .label { font-size: 12px; color: var(--text-dim); margin-bottom: 6px; }
+#voice-caption .text { font-size: 22px; font-weight: 600; line-height: 1.35; }
+
+#stat-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding: 0 16px 20px;
+  background: var(--surface);
+}
+.stat-card { background: #0f1c16; border-radius: 14px; padding: 14px 8px; text-align: center; }
+.stat-card .label { font-size: 12px; color: var(--text-dim); margin-bottom: 4px; }
+.stat-card .value { font-size: 24px; font-weight: 700; }
+
+#mic-btn {
+  position: absolute;
+  bottom: 190px;
+  right: 20px;
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: none;
+  color: #06140f;
+  font-size: 24px;
+  z-index: 1000; /* Leaflet 레이어 위로 */
+}
+#mic-btn.listening { background: var(--danger); }
+
+.hidden { display: none !important; }
+
+/* ---------- 마이페이지 ---------- */
+.setup-header-row { display: flex; align-items: center; justify-content: space-between; }
+.btn-icon {
+  width: 40px; height: 40px; border-radius: 50%; border: 1px solid #2a3b33;
+  background: transparent; color: var(--text); font-size: 18px;
+}
+#profile-face-preview {
+  width: 140px; height: 140px; border-radius: 50%; object-fit: cover;
+  background: #0f1c16; display: block; margin: 0 auto 16px;
+}
+#profile-goal-input {
+  background: #0f1c16; border: 1px solid #2a3b33; border-radius: 12px;
+  padding: 14px 16px; color: var(--text); font-size: 16px; width: 100%;
+}
+
+/* ---------- 음악 검색 (유튜브/Spotify) ---------- */
+.music-search-row { display: flex; gap: 8px; margin-top: 10px; }
+.music-search-row input {
+  flex: 1; background: #0f1c16; border: 1px solid #2a3b33; border-radius: 12px;
+  padding: 12px 14px; color: var(--text); font-size: 15px;
+}
+.search-result-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 0; border-bottom: 1px solid #1c2b23; font-size: 14px; gap: 10px;
+}
+.search-result-item span { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.search-result-item button {
+  padding: 6px 12px; border-radius: 10px; border: 1px solid #2a3b33;
+  background: transparent; color: var(--accent-light); font-size: 13px; flex-shrink: 0;
+}
+
+#youtube-player-box {
+  position: absolute; bottom: 12px; left: 12px;
+  border-radius: 10px; overflow: hidden; opacity: 0.9; z-index: 500;
+}
+
+/* ---------- 로그인/회원가입 ---------- */
+.tab-row { display: flex; gap: 8px; margin-bottom: 20px; }
+.tab-btn {
+  flex: 1; padding: 12px; border-radius: 12px; border: 1px solid #2a3b33;
+  background: transparent; color: var(--text-dim); font-size: 15px; font-weight: 600;
+}
+.tab-btn.active { background: var(--accent); color: #06140f; border-color: var(--accent); }
+
+.auth-form { display: flex; flex-direction: column; gap: 10px; }
+.auth-form input, .auth-form select {
+  background: #0f1c16; border: 1px solid #2a3b33; border-radius: 12px;
+  padding: 14px 16px; color: var(--text); font-size: 16px; width: 100%;
+}
+.auth-form input::placeholder { color: var(--text-dim); }
+
+.auth-divider { text-align: center; color: var(--text-dim); font-size: 13px; margin: 16px 0; }
+.auth-error { color: var(--danger); font-size: 14px; margin-top: 12px; text-align: center; }
+
+.id-check-row { display: flex; gap: 8px; }
+.id-check-row input { flex: 1; }
+.btn-check {
+  padding: 0 16px; border-radius: 12px; border: 1px solid #2a3b33;
+  background: transparent; color: var(--text); font-size: 14px; white-space: nowrap;
+}
+.id-check-result { font-size: 13px; margin: -4px 0 0; }
+.id-check-result.ok { color: var(--accent-light); }
+.id-check-result.taken { color: var(--danger); }
+
+/* ---------- 인트로 영상 ---------- */
+#screen-intro { padding: 0; position: relative; background: #000; }
+#intro-video { width: 100%; height: 100%; object-fit: cover; }
+
+/* ---------- 홈 화면 ---------- */
+.run-history-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 12px 0; border-bottom: 1px solid #1c2b23; font-size: 14px;
+}
+.run-history-item .date { color: var(--text-dim); font-size: 12px; }
+.run-history-item .stats { text-align: right; }
