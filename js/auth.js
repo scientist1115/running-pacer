@@ -19,13 +19,20 @@ const Auth = (() => {
   const ID_DOMAIN = '@runpacer.local';
   const idToEmail = (id) => `${id}${ID_DOMAIN}`;
 
-  // 아이디 규칙: 영문+숫자 조합, 8~14자 / 비밀번호는 6자 이상이면 됨(구성 제한 없음)
+  // 아이디 규칙: 영문+숫자 조합, 8~14자 / 비밀번호는 8자 이상이면 됨(구성 제한은 없음)
+  // 문자 종류를 강제하면 오히려 "Password1!" 같은 뻔한 비밀번호를 만들어내므로,
+  // 대신 길이 + 흔한 취약 비밀번호/아이디와 동일한 값만 최소한으로 거름
   const ID_REGEX = /^(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9]{8,14}$/;
+  const COMMON_WEAK_PASSWORDS = ['password', '12345678', '123456789', 'qwerty123', 'password1', 'abcd1234'];
   function isValidId(value) {
     return ID_REGEX.test(value || '');
   }
-  function isValidPassword(value) {
-    return !!value && value.length >= 6;
+  function isValidPassword(value, id) {
+    if (!value || value.length < 8) return false;
+    const lower = value.toLowerCase();
+    if (COMMON_WEAK_PASSWORDS.includes(lower)) return false;
+    if (id && lower === id.toLowerCase()) return false;
+    return true;
   }
 
   // usernames/{아이디} 문서 존재 여부로 중복체크 (프로필 전체를 노출하지 않고 아이디만 확인)
@@ -36,7 +43,7 @@ const Auth = (() => {
 
   async function signUp({ id, password, name, age, gender }) {
     if (!isValidId(id)) throw new Error('아이디는 영문+숫자 조합 8~14자여야 해요');
-    if (!isValidPassword(password)) throw new Error('비밀번호는 6자 이상이어야 해요');
+    if (!isValidPassword(password, id)) throw new Error('비밀번호는 8자 이상이어야 하고, 너무 흔하거나 아이디와 같으면 안 돼요');
     if (!name) throw new Error('이름을 입력해주세요');
 
     const available = await checkUsernameAvailable(id);

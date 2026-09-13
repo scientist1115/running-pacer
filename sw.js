@@ -1,4 +1,4 @@
-const CACHE = 'run-pacer-v3';
+const CACHE = 'run-pacer-v4';
 const SHELL = ['/', '/index.html', '/css/style.css', '/js/auth.js', '/js/spotify.js', '/js/app.js', '/js/voice.js', '/js/music.js', '/js/route.js', '/manifest.json'];
 
 self.addEventListener('install', (e) => {
@@ -16,12 +16,16 @@ self.addEventListener('activate', (e) => {
 // 네트워크 우선: 항상 최신 파일을 먼저 받아오고, 인터넷이 끊겼을 때만 캐시된 걸로 대체.
 // (전에는 캐시를 먼저 봐서, 새로 배포해도 옛날 파일이 계속 보이는 문제가 있었음)
 self.addEventListener('fetch', (e) => {
-  if (e.request.url.includes('/api/')) return; // API 호출은 캐시 대상 아님
+  if (e.request.method !== 'GET') return; // 캐시는 GET만 지원 (POST/PUT 요청은 그냥 통과)
+  if (e.request.url.includes('/api/')) return; // 우리 서버 API 호출은 캐시 대상 아님
   e.respondWith(
     fetch(e.request)
       .then((res) => {
-        const copy = res.clone();
-        caches.open(CACHE).then((c) => c.put(e.request, copy));
+        // 200 OK 응답만 캐시함 (206 부분응답 등은 Cache API가 저장 못 함)
+        if (res.ok && res.status === 200) {
+          const copy = res.clone();
+          caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {});
+        }
         return res;
       })
       .catch(() => caches.match(e.request))
