@@ -1,4 +1,4 @@
-const CACHE = 'run-pacer-v2';
+const CACHE = 'run-pacer-v3';
 const SHELL = ['/', '/index.html', '/css/style.css', '/js/auth.js', '/js/spotify.js', '/js/app.js', '/js/voice.js', '/js/music.js', '/js/route.js', '/manifest.json'];
 
 self.addEventListener('install', (e) => {

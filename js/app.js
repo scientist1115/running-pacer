@@ -17,6 +17,10 @@
   let announcedTurnCount = 0; // 지금까지 음성으로 안내한 회전 지점 개수
   let faceMarkerObj = null;  // MapLibre 마커 (얼굴 사진 + 방향 화살표)
   let currentBearing = 0;    // 현재 진행 방향(도) - 지도 회전 기준
+  let compassHeading = null; // 나침반(자기센서)이 알려주는 실제 핸드폰이 향한 방향
+  let orientationAttached = false;
+  let lastKnownIsMoving = false;
+  let lastCompassApply = 0;
   let homeMapObj = null;     // 홈 화면 지도(지난 경로 겹쳐보기) MapLibre 인스턴스
   let finishMapObj = null;   // 완료 화면 지도 MapLibre 인스턴스
   let paceSplits = [];       // 이번 러닝의 구간별 페이스 기록 (완료 화면 그래프용)
@@ -126,6 +130,45 @@
     beginRun(cmd);
   }
 
+  // 실제 나침반(자기센서) 방향을 읽어서, 가만히 서서 몸만 돌려도 지도가 같이 돌게 함
+  function attachCompass() {
+    if (orientationAttached) return;
+    orientationAttached = true;
+    const handler = (e) => {
+      let heading = null;
+      if (typeof e.webkitCompassHeading === 'number') {
+        heading = e.webkitCompassHeading; // iOS: 0=북, 시계방향으로 증가
+      } else if (e.absolute && typeof e.alpha === 'number') {
+        heading = (360 - e.alpha) % 360; // 안드로이드 근사치
+      }
+      if (heading === null) return;
+      compassHeading = heading;
+
+      // 멈춰 서 있을 때는 위치 이동 없이 방향만 바로 반영 (몸을 돌리면 화면도 즉시 도는 VR 느낌)
+      if (!lastKnownIsMoving && mapHelper) {
+        const now = Date.now();
+        if (now - lastCompassApply > 100) {
+          lastCompassApply = now;
+          currentBearing = heading;
+          mapHelper.map.setBearing(heading);
+        }
+      }
+    };
+    window.addEventListener('deviceorientationabsolute', handler, true);
+    window.addEventListener('deviceorientation', handler, true);
+  }
+
+  // iOS는 센서 접근에 사용자 탭이 필요해서, 버튼 누르는 시점에 같이 요청함
+  function requestCompassPermission() {
+    if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function') {
+      DeviceOrientationEvent.requestPermission().then((state) => {
+        if (state === 'granted') attachCompass();
+      }).catch(() => {});
+    } else {
+      attachCompass();
+    }
+  }
+
   async function beginRun(cmd) {
     showScreen('screen-run');
     announce('경로를 준비하고 있어요.');
@@ -193,14 +236,18 @@
 
     if (isRealMovement) traveledMeters += movedMeters;
 
-    // 방향: 기기가 준 heading이 있으면 그걸 쓰고, 없으면 직전 위치 대비 이동 방향으로 계산
+    // 방향: 나침반이 있으면 그걸 최우선으로(제일 반응이 빠름), 없으면 기기 heading,
+    // 그것도 없으면 직전 위치 대비 이동 방향으로 계산
     if (isMoving) {
-      if (typeof pos.coords.heading === 'number' && !Number.isNaN(pos.coords.heading)) {
+      if (compassHeading !== null) {
+        currentBearing = compassHeading;
+      } else if (typeof pos.coords.heading === 'number' && !Number.isNaN(pos.coords.heading)) {
         currentBearing = pos.coords.heading;
       } else if (isRealMovement) {
         currentBearing = RouteEngine.computeBearing(lastPos, cur);
       }
     }
+    lastKnownIsMoving = isMoving;
 
     lastPos = cur;
     Music.onSpeedUpdate(speed);
@@ -688,8 +735,12 @@
       if (onboardReturnScreen === 'screen-home') loadHomeScreen();
     });
 
-    $('btn-setup-mic').addEventListener('click', () => Voice.listenOnce(handleSetupVoice));
+    $('btn-setup-mic').addEventListener('click', () => {
+      requestCompassPermission();
+      Voice.listenOnce(handleSetupVoice);
+    });
     $('btn-setup-manual').addEventListener('click', () => {
+      requestCompassPermission();
       const destination = prompt('목적지 (없으면 비워두기)') || null;
       const distance = parseFloat(prompt('거리(km)')) || null;
       if (destination && distance) beginRun({ type: 'destination_with_distance', destination, distance });
