@@ -234,12 +234,35 @@ const RouteEngine = (() => {
       }, labelLayerId);
 
       map.addSource('run-pacer-route', { type: 'geojson', data: routeGeoJson });
+      // 은은한 네온 느낌을 위해 흐릿하고 굵은 "발광" 선을 먼저 깔고, 그 위에 선명한 선을 얹음
+      map.addLayer({
+        id: 'run-pacer-route-glow',
+        type: 'line',
+        source: 'run-pacer-route',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#2BD97C', 'line-width': 22, 'line-blur': 3, 'line-opacity': 0.35 },
+      });
       map.addLayer({
         id: 'run-pacer-route-line',
         type: 'line',
         source: 'run-pacer-route',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
         paint: { 'line-color': '#2BD97C', 'line-width': 9 },
+      });
+
+      // 진행 방향으로 행진하는 화살표(쉐브론) - 사진 속 AR 안내처럼 앞길을 표시
+      map.addSource('run-pacer-chevrons', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      map.addLayer({
+        id: 'run-pacer-chevrons-glow',
+        type: 'fill',
+        source: 'run-pacer-chevrons',
+        paint: { 'fill-color': '#FFB238', 'fill-opacity': 0.35 },
+      });
+      map.addLayer({
+        id: 'run-pacer-chevrons-fill',
+        type: 'fill',
+        source: 'run-pacer-chevrons',
+        paint: { 'fill-color': '#FFB238', 'fill-opacity': 0.95 },
       });
     });
 
@@ -250,20 +273,66 @@ const RouteEngine = (() => {
     }
     const total = cumDist[cumDist.length - 1] || 1;
 
-    function pointAtProgress(t) {
-      const target = total * Math.min(Math.max(t, 0), 1);
+    function distToCoord(target) {
       let i = 1;
       while (i < cumDist.length && cumDist[i] < target) i++;
-      if (i >= cumDist.length) return points[points.length - 1];
+      if (i >= cumDist.length) return { point: points[points.length - 1], bearing: initialBearing };
       const segStart = cumDist[i - 1];
       const segEnd = cumDist[i];
       const segT = segEnd > segStart ? (target - segStart) / (segEnd - segStart) : 0;
       const a = points[i - 1];
       const b = points[i];
-      return { lat: a.lat + (b.lat - a.lat) * segT, lng: a.lng + (b.lng - a.lng) * segT };
+      return {
+        point: { lat: a.lat + (b.lat - a.lat) * segT, lng: a.lng + (b.lng - a.lng) * segT },
+        bearing: computeBearing(a, b),
+      };
     }
 
-    return { map, pointAtProgress, initialBearing };
+    function pointAtProgress(t) {
+      return distToCoord(total * Math.min(Math.max(t, 0), 1)).point;
+    }
+
+    // 작은 화살표(쉐브론) 모양의 폴리곤을 특정 위치·방향으로 만듦 (이미지 로딩 없이 순수 도형으로)
+    function makeChevron(center, bearingDeg, sizeMeters) {
+      const half = sizeMeters / 2;
+      const local = [
+        [0, sizeMeters * 0.6],     // 앞 꼭짓점
+        [half, -sizeMeters * 0.4], // 오른쪽 뒤
+        [0, -sizeMeters * 0.1],    // 가운데 오목한 지점
+        [-half, -sizeMeters * 0.4],// 왼쪽 뒤
+      ];
+      const coords = local.map(([x, y]) => {
+        const rotated = RouteEngineDestFromLocal(center, bearingDeg, x, y);
+        return [rotated.lng, rotated.lat];
+      });
+      coords.push(coords[0]);
+      return coords;
+    }
+
+    function RouteEngineDestFromLocal(center, bearingDeg, xMeters, yMeters) {
+      // xMeters: 오른쪽(+)/왼쪽(-), yMeters: 앞(+)/뒤(-) 방향 오프셋을 위경도로 변환
+      const dist = Math.sqrt(xMeters * xMeters + yMeters * yMeters);
+      if (dist === 0) return center;
+      const localBearing = (Math.atan2(xMeters, yMeters) * 180) / Math.PI;
+      return destinationPoint(center, (bearingDeg + localBearing + 360) % 360, dist);
+    }
+
+    // 진행률 기준 앞으로 120m까지, 15m 간격으로 화살표를 배치해서 지도 위 소스를 갱신
+    function updateChevrons(progressT, mapInstance) {
+      if (!mapInstance.getSource('run-pacer-chevrons')) return;
+      const startDist = total * Math.min(Math.max(progressT, 0), 1);
+      const features = [];
+      for (let d = startDist + 14; d < Math.min(startDist + 130, total); d += 16) {
+        const { point, bearing } = distToCoord(d);
+        features.push({
+          type: 'Feature',
+          geometry: { type: 'Polygon', coordinates: [makeChevron(point, bearing, 3.4)] },
+        });
+      }
+      mapInstance.getSource('run-pacer-chevrons').setData({ type: 'FeatureCollection', features });
+    }
+
+    return { map, pointAtProgress, initialBearing, updateChevrons };
   }
 
   return {

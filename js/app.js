@@ -127,11 +127,11 @@
       announce('잘 못 들었어요. 다시 한 번 말해주세요.');
       return;
     }
-    runCountdown(cmd);
+    prepareRoute(cmd);
   }
 
-  // 러닝 시작 전 3-2-1 카운트다운을 보여준 다음 실제로 시작함
-  function runCountdown(cmd) {
+  // 카운트다운 후 실제로 GPS 추적을 시작함 (경로는 이미 준비되어 화면에 그려진 상태)
+  function runCountdown() {
     showScreen('screen-countdown');
     let n = 3;
     $('countdown-num').textContent = n;
@@ -141,7 +141,17 @@
         $('countdown-num').textContent = n;
       } else {
         clearInterval(timer);
-        beginRun(cmd);
+        showScreen('screen-run');
+        startedAt = Date.now();
+        traveledMeters = 0;
+        goalCountedForThisRun = false;
+        announcedTurnCount = 0;
+        paceSplits = [];
+        lastSplitMeters = 0;
+        lastSplitTime = Date.now();
+        announce('출발할게요.');
+        Music.startForRun();
+        startGpsTracking();
       }
     }, 700);
   }
@@ -185,17 +195,14 @@
     }
   }
 
-  async function beginRun(cmd) {
+  // 경로를 조회해서 화면에 그려두기만 함 (GPS 추적은 "러닝 시작" 버튼을 눌러야 시작됨)
+  async function prepareRoute(cmd) {
     showScreen('screen-run');
     announce('경로를 준비하고 있어요.');
-    startedAt = Date.now();
-    traveledMeters = 0;
-    goalCountedForThisRun = false;
-    announcedTurnCount = 0;
     faceMarkerObj = null;
-    paceSplits = [];
-    lastSplitMeters = 0;
-    lastSplitTime = Date.now();
+    traveledMeters = 0;
+    $('turn-banner').classList.add('hidden');
+    $('btn-start-run').classList.add('hidden');
 
     navigator.geolocation.getCurrentPosition(async (pos) => {
       const start = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -214,9 +221,8 @@
         currentBearing = mapHelper.initialBearing || 0;
         updateMarker(0, currentBearing, false);
         $('stat-distance').textContent = (route.distanceMeters / 1000).toFixed(1) + 'km';
-        announce('경로 준비됐어요. 출발할게요.');
-        Music.startForRun();
-        startGpsTracking();
+        announce('경로 준비됐어요. 시작 버튼을 눌러주세요.');
+        $('btn-start-run').classList.remove('hidden');
       } catch (e) {
         announce('경로를 만드는 데 실패했어요. ' + e.message);
       }
@@ -381,10 +387,19 @@
 
   // 다음 회전 지점에 가까워지면 그 안내 문구를 말해줌 (Tmap이 준 turns 좌표 기준)
   function checkUpcomingTurn(currentPos) {
-    if (!route?.turns?.length || announcedTurnCount >= route.turns.length) return;
+    if (!route?.turns?.length || announcedTurnCount >= route.turns.length) {
+      $('turn-banner').classList.add('hidden');
+      return;
+    }
     const next = route.turns[announcedTurnCount];
     if (!next.lat || !next.lng) { announcedTurnCount++; return; }
     const dist = haversine(currentPos, next);
+
+    // 배너는 매번 최신 거리로 갱신해서 항상 다음 회전까지 얼마나 남았는지 보여줌
+    $('turn-dist').textContent = `${Math.round(dist)}m`;
+    $('turn-desc').textContent = next.description || '방향 전환';
+    $('turn-banner').classList.remove('hidden');
+
     if (dist < 40) {
       announcedTurnCount++;
       if (next.description) announce(next.description);
@@ -396,6 +411,7 @@
     if (!mapHelper) return;
     const pos = mapHelper.pointAtProgress(progress);
     const face = localStorage.getItem(FACE_KEY);
+    mapHelper.updateChevrons(progress, mapHelper.map);
 
     if (!faceMarkerObj) {
       const el = document.createElement('div');
@@ -762,9 +778,14 @@
       requestCompassPermission();
       const destination = prompt('목적지 (없으면 비워두기)') || null;
       const distance = parseFloat(prompt('거리(km)')) || null;
-      if (destination && distance) runCountdown({ type: 'destination_with_distance', destination, distance });
-      else if (distance) runCountdown({ type: 'distance_only', distance });
-      else if (destination) runCountdown({ type: 'destination_only', destination });
+      if (destination && distance) prepareRoute({ type: 'destination_with_distance', destination, distance });
+      else if (distance) prepareRoute({ type: 'distance_only', distance });
+      else if (destination) prepareRoute({ type: 'destination_only', destination });
+    });
+
+    $('btn-start-run').addEventListener('click', () => {
+      $('btn-start-run').classList.add('hidden');
+      runCountdown();
     });
 
     $('mic-btn').addEventListener('click', () => Voice.listenOnce(handleRunVoice));

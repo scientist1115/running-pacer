@@ -37,7 +37,7 @@ const Voice = (() => {
     recognition.start();
   }
 
-  // "OO공원까지 3키로", "5키로 달릴래", "OO노래 틀어줘" 같은 문장을 대략 분류
+  // "OO공원까지 3키로", "서호공원 갈래", "5키로 달릴래", "OO노래 틀어줘" 같은 문장을 대략 분류
   function parseCommand(text) {
     const musicMatch = text.match(/(.+?)\s*(노래|음악)\s*(틀어|재생)/);
     if (musicMatch) return { type: 'music', query: musicMatch[1].trim() };
@@ -45,9 +45,25 @@ const Voice = (() => {
     const distMatch = text.match(/(\d+(?:\.\d+)?)\s*(키로|킬로|km)/i);
     const distance = distMatch ? parseFloat(distMatch[1]) : null;
 
-    // "까지"가 있으면 그 앞부분을 목적지로 취급
-    const destMatch = text.match(/(.+?)까지/);
-    const destination = destMatch ? destMatch[1].trim() : null;
+    // 목적지 표현을 여러 패턴으로 시도: "OO까지" -> "OO(으)로 갈래/가자" -> 그 외엔 동사만 떼어냄
+    let destination = null;
+    let destMatch = text.match(/(.+?)까지/);
+    if (destMatch) {
+      destination = destMatch[1].trim();
+    } else {
+      destMatch = text.match(/(.+?)(?:으로|로)\s*(?:갈래|갈까|가자|가고\s*싶어?|뛸래|뛰고\s*싶어?)/);
+      if (destMatch) destination = destMatch[1].trim();
+    }
+
+    // 그래도 못 찾았으면, 거리 표현이나 끝에 붙는 동사를 떼어내고 남는 걸 목적지 후보로 취급
+    // (예: "서호공원 갈래", "한강공원" 처럼 짧게 말한 경우)
+    if (!destination) {
+      let cleaned = text
+        .replace(/(\d+(?:\.\d+)?)\s*(키로|킬로|km)/i, '')
+        .replace(/(갈래|갈까|가자|가고\s*싶어?|뛸래|뛰고\s*싶어?|줄래|해줘|까지)\s*$/, '')
+        .trim();
+      if (cleaned && !distance) destination = cleaned; // 거리만 말한 경우엔 후보로 쓰지 않음
+    }
 
     if (distance && destination) return { type: 'destination_with_distance', destination, distance };
     if (distance && !destination) return { type: 'distance_only', distance };
