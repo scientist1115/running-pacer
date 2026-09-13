@@ -353,7 +353,7 @@
     if (isMoving) {
       // 카메라를 내 위치보다 살짝 앞쪽(진행 방향)으로 밀어서, 내 마커는 화면 아래쪽에 오고
       // 앞으로 갈 길이 더 넓게 보이는 "로드뷰/러너 시점" 느낌을 냄
-      const lookAhead = RouteEngine.destinationPoint(pos, bearing, 22);
+      const lookAhead = RouteEngine.destinationPoint(pos, bearing, 38);
       mapHelper.map.easeTo({ center: [lookAhead.lng, lookAhead.lat], bearing, duration: 450, easing: (t) => t });
     }
     // isMoving이 false면 카메라를 그대로 둬서 "멈추면 화면도 멈춤"을 구현

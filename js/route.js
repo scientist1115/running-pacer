@@ -193,8 +193,8 @@ const RouteEngine = (() => {
       container: containerEl,
       style: 'https://tiles.openfreemap.org/styles/bright',
       center: [start.lng, start.lat],
-      zoom: 18.5,
-      pitch: 72,
+      zoom: 19,
+      pitch: 78,
       maxPitch: 85,
       bearing: initialBearing,
       attributionControl: true,
@@ -239,7 +239,7 @@ const RouteEngine = (() => {
         type: 'line',
         source: 'run-pacer-route',
         layout: { 'line-cap': 'round', 'line-join': 'round' },
-        paint: { 'line-color': '#2BD97C', 'line-width': 6 },
+        paint: { 'line-color': '#2BD97C', 'line-width': 9 },
       });
     });
 
