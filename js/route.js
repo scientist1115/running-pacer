@@ -46,6 +46,7 @@ const RouteEngine = (() => {
         console.warn('횡단보도 계산 실패:', res.status, data.error, data.sources);
         return { count: 0, ok: false };
       }
+      console.log('[횡단보도 확인]', data.count, '개 (정부:', data.sources?.gov, '/ OSM:', data.sources?.osm, ')');
       return { count: data.count || 0, ok: true };
     } catch (e) {
       console.warn('횡단보도 계산 실패:', e.message);
