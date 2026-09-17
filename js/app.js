@@ -249,21 +249,31 @@
         updateMarker(0, currentBearing, false);
         $('stat-distance').textContent = (route.distanceMeters / 1000).toFixed(1) + 'km';
 
-        // 경로가 이미 채점된 경우(공원 경유/왕복 후보 비교) crosswalkCount가 붙어있고,
+        // 경로가 이미 채점된 경우(공원 경유/왕복 후보 비교) crosswalkCount/crosswalkDataOk가 붙어있고,
         // 직선 경로 그대로 쓴 경우엔 여기서 한 번 계산해서 시작 전에 미리 보여줌
-        const crosswalkCount = typeof route.crosswalkCount === 'number'
-          ? route.crosswalkCount
-          : await RouteEngine.countCrosswalksNear(route.points).catch(() => 0);
+        let crosswalkCount = route.crosswalkCount;
+        let crosswalkDataOk = route.crosswalkDataOk;
+        if (typeof crosswalkCount !== 'number') {
+          const result = await RouteEngine.countCrosswalksNear(route.points);
+          crosswalkCount = result.count;
+          crosswalkDataOk = result.ok;
+        }
         route.crosswalkCount = crosswalkCount;
-        const readySub = crosswalkCount === 0
-          ? '횡단보도 없이 갈 수 있어요'
-          : `횡단보도 ${crosswalkCount}회 예상돼요`;
+        route.crosswalkDataOk = crosswalkDataOk;
+
+        const readySub = !crosswalkDataOk
+          ? '횡단보도 정보를 확인하지 못했어요 - 직접 살펴보며 뛰어주세요'
+          : crosswalkCount === 0
+            ? '횡단보도 없이 갈 수 있어요'
+            : `횡단보도 ${crosswalkCount}회 예상돼요`;
         $('route-ready-sub').textContent = readySub;
         renderCrosswalkOptions(route);
 
-        announce(crosswalkCount === 0
-          ? '경로 준비됐어요. 횡단보도 없이 갈 수 있어요. 시작 버튼을 눌러주세요.'
-          : `경로 준비됐어요. 횡단보도 ${crosswalkCount}번 건너요. 시작 버튼을 눌러주세요.`);
+        announce(!crosswalkDataOk
+          ? '경로 준비됐어요. 이번엔 횡단보도 정보를 확인하지 못했어요. 직접 살펴보며 뛰어주세요. 시작 버튼을 눌러주세요.'
+          : crosswalkCount === 0
+            ? '경로 준비됐어요. 횡단보도 없이 갈 수 있어요. 시작 버튼을 눌러주세요.'
+            : `경로 준비됐어요. 횡단보도 ${crosswalkCount}번 건너요. 시작 버튼을 눌러주세요.`);
         $('btn-start-run').classList.remove('hidden');
       } catch (e) {
         announce('경로를 만드는 데 실패했어요. ' + e.message);
@@ -278,12 +288,17 @@
     const seen = new Set();
     const options = [];
     for (const opt of rawOptions) {
+      const ok = opt.crosswalkDataOk !== false; // true/undefined면 성공으로 간주(구버전 경로 호환)
       const count = typeof opt.crosswalkCount === 'number' ? opt.crosswalkCount : chosenRoute.crosswalkCount;
-      if (seen.has(count)) continue; // 같은 개수면 이미 더 좋은 점수의 후보가 앞에 있었던 것
-      seen.add(count);
-      options.push({ ...opt, crosswalkCount: count });
+      const key = ok ? `c${count}` : 'failed'; // 실패한 후보들은 전부 하나의 "확인불가" 옵션으로 묶음
+      if (seen.has(key)) continue; // 같은 개수면 이미 더 좋은 점수의 후보가 앞에 있었던 것
+      seen.add(key);
+      options.push({ ...opt, crosswalkCount: count, crosswalkDataOk: ok });
     }
-    options.sort((a, b) => a.crosswalkCount - b.crosswalkCount);
+    options.sort((a, b) => {
+      if (a.crosswalkDataOk !== b.crosswalkDataOk) return a.crosswalkDataOk ? -1 : 1; // 확인된 것 먼저, 확인불가는 맨 뒤
+      return a.crosswalkCount - b.crosswalkCount;
+    });
     currentRouteOptions = options;
 
     const box = $('crosswalk-selector');
@@ -297,7 +312,7 @@
       const chip = document.createElement('button');
       chip.type = 'button';
       chip.className = 'crosswalk-chip' + (opt.crosswalkCount === chosenRoute.crosswalkCount ? ' active' : '');
-      chip.textContent = opt.crosswalkCount === 0 ? '0회' : `${opt.crosswalkCount}회`;
+      chip.textContent = opt.crosswalkDataOk === false ? '확인불가' : (opt.crosswalkCount === 0 ? '0회' : `${opt.crosswalkCount}회`);
       chip.addEventListener('click', () => applyRouteOption(opt));
       chipsEl.appendChild(chip);
     });
@@ -311,13 +326,17 @@
     currentBearing = mapHelper.initialBearing || 0;
     updateMarker(0, currentBearing, false);
     $('stat-distance').textContent = (route.distanceMeters / 1000).toFixed(1) + 'km';
-    $('route-ready-sub').textContent = opt.crosswalkCount === 0
-      ? '횡단보도 없이 갈 수 있어요'
-      : `횡단보도 ${opt.crosswalkCount}회 예상돼요`;
+    $('route-ready-sub').textContent = opt.crosswalkDataOk === false
+      ? '횡단보도 정보를 확인하지 못했어요 - 직접 살펴보며 뛰어주세요'
+      : opt.crosswalkCount === 0
+        ? '횡단보도 없이 갈 수 있어요'
+        : `횡단보도 ${opt.crosswalkCount}회 예상돼요`;
     renderCrosswalkOptions(route);
-    announce(opt.crosswalkCount === 0
-      ? '횡단보도 없는 경로로 바꿨어요.'
-      : `횡단보도 ${opt.crosswalkCount}회인 경로로 바꿨어요.`);
+    announce(opt.crosswalkDataOk === false
+      ? '횡단보도 정보를 확인 못하는 경로로 바꿨어요.'
+      : opt.crosswalkCount === 0
+        ? '횡단보도 없는 경로로 바꿨어요.'
+        : `횡단보도 ${opt.crosswalkCount}회인 경로로 바꿨어요.`);
   }
 
   async function geocode(placeName, center) {

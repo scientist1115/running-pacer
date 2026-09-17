@@ -33,7 +33,7 @@ const RouteEngine = (() => {
     return res.json(); // [{name, lat, lng}, ...]
   }
 
-  // 경로 좌표 근처 횡단보도 개수 (전국횡단보도표준데이터) - 느리면 0점 처리하고 넘어감
+  // 경로 좌표 근처 횡단보도 개수 (전국횡단보도표준데이터) - 실패와 "진짜 0개"를 구분해서 반환
   async function countCrosswalksNear(routePoints) {
     try {
       const res = await fetchWithTimeout('/api/crosswalk-count', {
@@ -41,11 +41,16 @@ const RouteEngine = (() => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ points: routePoints }),
       }, 5000);
-      if (!res.ok) return 0;
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        console.warn('횡단보도 계산 실패:', res.status, body.error);
+        return { count: 0, ok: false };
+      }
       const data = await res.json();
-      return data.count || 0;
-    } catch {
-      return 0;
+      return { count: data.count || 0, ok: true };
+    } catch (e) {
+      console.warn('횡단보도 계산 실패:', e.message);
+      return { count: 0, ok: false };
     }
   }
 
@@ -73,7 +78,12 @@ const RouteEngine = (() => {
         countCrosswalksNear(c.points),
         countBadSurfaceNear(c.points),
       ]);
-      return { ...c, crosswalkCount: crosswalks, score: crosswalks * 2 + badSurface };
+      return {
+        ...c,
+        crosswalkCount: crosswalks.count,
+        crosswalkDataOk: crosswalks.ok,
+        score: crosswalks.count * 2 + badSurface,
+      };
     }));
     scored.sort((a, b) => a.score - b.score);
     return scored;
@@ -124,8 +134,10 @@ const RouteEngine = (() => {
     const parkTurnarounds = parks.slice(0, 3).map((p) => ({ lat: p.lat, lng: p.lng, name: p.name }));
 
     const halfMeters = (targetKm * 1000) / 2;
+    // 실제 도로를 따라 걷는 거리는 직선거리보다 보통 20~40% 정도 더 길게 나와서(길이 꺾이고 휘어있으니까),
+    // 직선거리로 그대로 반환점을 잡으면 왕복 거리가 목표보다 계속 길게 나옴. 0.72를 곱해서 보정.
     const bearingTurnarounds = [0, 60, 120, 180, 240, 300].map((bearing, i) => {
-      const pt = destinationPoint(start, bearing, halfMeters);
+      const pt = destinationPoint(start, bearing, halfMeters * 0.72);
       return { lat: pt.lat, lng: pt.lng, name: `${targetKm}km 코스 ${i + 1}` };
     });
 
@@ -150,7 +162,7 @@ const RouteEngine = (() => {
     if (candidates.length === 0) throw new Error('경로를 만들 수 없었어요');
 
     // 목표거리(±20%)에 맞는 후보들 중에서 고르고, 없으면 거리가 제일 가까운 걸로
-    const qualifying = candidates.filter((c) => Math.abs(c.distanceMeters / 1000 - targetKm) <= targetKm * 0.2);
+    const qualifying = candidates.filter((c) => Math.abs(c.distanceMeters / 1000 - targetKm) <= targetKm * 0.25);
     if (qualifying.length) {
       const scored = await pickBestRoute(qualifying);
       return { ...scored[0], routeOptions: scored };
