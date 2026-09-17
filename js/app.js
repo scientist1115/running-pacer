@@ -941,6 +941,7 @@
 
     $('btn-start-run').addEventListener('click', () => {
       $('btn-start-run').classList.add('hidden');
+      requestCompassPermission();
       runCountdown();
     });
 

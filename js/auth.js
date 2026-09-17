@@ -158,10 +158,19 @@ const Auth = (() => {
   }
 
   // 순위 공개 켜기: 이번 해 기록을 다시 계산해서 leaderboard/{uid} 문서로 올림 (본인만 이 문서에 쓸 수 있음)
+  // 이름/아이디 중간 글자를 가림 - 화면에서만 가리면 공개 읽기 가능한 Firestore 문서엔
+  // 원본이 그대로 남아있는 셈이라, 저장하는 시점에 이미 가려서 씀
+  function maskMiddle(str) {
+    if (!str) return '러너';
+    if (str.length <= 1) return str;
+    if (str.length === 2) return str[0] + '*';
+    return str[0] + '*'.repeat(str.length - 2) + str[str.length - 1];
+  }
+
   async function publishLeaderboard(uid, displayName) {
     const stats = await getYearRunStats(uid);
     await db.collection('leaderboard').doc(uid).set({
-      displayName: displayName || '러너',
+      displayName: maskMiddle(displayName),
       distanceKm: stats.distanceKm,
       avgPaceMinPerKm: stats.avgPaceMinPerKm,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
