@@ -33,7 +33,7 @@ const RouteEngine = (() => {
     return res.json(); // [{name, lat, lng}, ...]
   }
 
-  // 경로 좌표 근처 횡단보도 개수 (전국횡단보도표준데이터) - 실패와 "진짜 0개"를 구분해서 반환
+  // 경로 좌표 근처 횡단보도 개수 (전국횡단보도표준데이터 + OSM) - 실패와 "진짜 0개"를 구분해서 반환
   async function countCrosswalksNear(routePoints) {
     try {
       const res = await fetchWithTimeout('/api/crosswalk-count', {
@@ -41,12 +41,11 @@ const RouteEngine = (() => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ points: routePoints }),
       }, 5000);
-      if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        console.warn('횡단보도 계산 실패:', res.status, body.error);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        console.warn('횡단보도 계산 실패:', res.status, data.error, data.sources);
         return { count: 0, ok: false };
       }
-      const data = await res.json();
       return { count: data.count || 0, ok: true };
     } catch (e) {
       console.warn('횡단보도 계산 실패:', e.message);

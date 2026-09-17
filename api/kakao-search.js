@@ -1,11 +1,12 @@
 // 카카오 로컬 키워드 검색 프록시 - 장소명/공원 검색용 (Vercel 서버리스 함수)
-async function searchKakao(keyword, lat, lng, useRadius) {
+async function searchKakao(keyword, lat, lng, opts) {
   const url = new URL('https://dapi.kakao.com/v2/local/search/keyword.json');
   url.searchParams.set('query', keyword);
+  if (opts?.page) url.searchParams.set('page', String(opts.page));
   if (lat && lng) {
     url.searchParams.set('x', lng);
     url.searchParams.set('y', lat);
-    if (useRadius) {
+    if (opts?.useRadius) {
       url.searchParams.set('radius', '5000');
       url.searchParams.set('sort', 'distance');
     }
@@ -16,15 +17,15 @@ async function searchKakao(keyword, lat, lng, useRadius) {
   return kakaoRes.json();
 }
 
-// 지하철역 카테고리(SW8)로 직접 검색 - "OO역"처럼 역 이름을 말했을 때, 이름에 "역"이 들어간
-// 무관한 업체(미용실 등)가 걸리지 않도록 진짜 지하철역 데이터 안에서만 찾음
+// 지하철역 카테고리(SW8) 중 가장 가까운 것 - 이름 매칭이 전부 실패했을 때 최후의 대안으로만 씀
+// (이 API는 이름으로 검색하는 기능이 없어서, "그나마 가장 가까운 역"만 알려줄 수 있음)
 async function searchKakaoStationCategory(lat, lng) {
   const url = new URL('https://dapi.kakao.com/v2/local/search/category.json');
   url.searchParams.set('category_group_code', 'SW8');
   if (lat && lng) {
     url.searchParams.set('x', lng);
     url.searchParams.set('y', lat);
-    url.searchParams.set('radius', '20000'); // 역은 5km보다 멀리 있을 수 있어서 넉넉히 20km
+    url.searchParams.set('radius', '20000');
     url.searchParams.set('sort', 'distance');
   }
   const kakaoRes = await fetch(url, {
@@ -43,31 +44,41 @@ module.exports = async (req, res) => {
     const trimmedKeyword = keyword.trim();
     const looksLikeStation = /역$/.test(trimmedKeyword);
 
-    // 세 방식을 같이 시도함:
-    // (1) 반경 5km + 거리순 - "근처 공원"처럼 가까운 곳 여러 개를 후보로 쓸 때 적합
-    // (2) 범위 제한 없는 검색 - 지명이 정확한데 5km보다 멀리 있을 수도 있는 경우 대비
-    // (3) "OO역"이면 지하철역 카테고리 검색도 추가 - 이름에 "역"만 들어간 무관한 업체가
-    //     일반 검색에서 먼저 걸리는 걸 막고, 진짜 역 데이터 안에서 찾음
-    const [radiusData, plainData, stationData] = await Promise.all([
-      searchKakao(trimmedKeyword, lat, lng, true),
-      searchKakao(trimmedKeyword, lat, lng, false),
-      looksLikeStation ? searchKakaoStationCategory(lat, lng).catch(() => ({ documents: [] })) : Promise.resolve({ documents: [] }),
+    // 이름 검색은 반경 5km(1,2페이지)+범위 무제한(1,2페이지)까지 넉넉히 긁어모음 -
+    // 역 이름은 비슷한 이름의 업체가 많아서 한 페이지(15개) 안에 진짜 역이 없을 수 있음
+    const [r1, r2, p1, p2] = await Promise.all([
+      searchKakao(trimmedKeyword, lat, lng, { useRadius: true, page: 1 }),
+      looksLikeStation ? searchKakao(trimmedKeyword, lat, lng, { useRadius: true, page: 2 }) : Promise.resolve({ documents: [] }),
+      searchKakao(trimmedKeyword, lat, lng, { useRadius: false, page: 1 }),
+      looksLikeStation ? searchKakao(trimmedKeyword, lat, lng, { useRadius: false, page: 2 }) : Promise.resolve({ documents: [] }),
     ]);
-    const radiusDocs = radiusData.documents || [];
-    const plainDocs = plainData.documents || [];
-    const stationDocs = stationData.documents || [];
+    const allDocs = [...(r1.documents || []), ...(r2.documents || []), ...(p1.documents || []), ...(p2.documents || [])];
+    const radiusDocs = r1.documents || [];
+    const plainDocs = p1.documents || [];
 
-    // 이름이 완전히 같은 곳(공백 무시)이 있으면 거리와 상관없이 그게 진짜 목적지일 확률이 높음.
-    // 역 이름이면 지하철역 카테고리에서 가장 먼저 찾고, 그다음 카카오 관련도 순, 그다음 반경 결과
     const normalize = (s) => (s || '').replace(/\s/g, '').toLowerCase();
     const target = normalize(trimmedKeyword);
     const findExact = (list) => list.find((d) => normalize(d.place_name) === target);
-    const exact = findExact(stationDocs) || findExact(plainDocs) || findExact(radiusDocs);
 
-    // 정확히 일치하는 곳이 있으면 그것만, 없으면: 역 카테고리 결과 > 반경 결과 > 범위 무제한 결과
-    const ordered = exact
-      ? [exact]
-      : (stationDocs.length ? stationDocs : (radiusDocs.length ? radiusDocs : plainDocs));
+    let exact = findExact(allDocs);
+
+    // "OO역"인데 정확히 일치하는 게 없으면: 이름 검색 결과 중 "지하철역" 카테고리인 것만 걸러서
+    // (미용실처럼 이름만 비슷한 무관한 업체 제외) 그 안에서 한 번 더 느슨하게(포함 관계로) 찾아봄
+    let stationFallback = null;
+    if (!exact && looksLikeStation) {
+      const stationOnly = allDocs.filter((d) => d.category_group_code === 'SW8');
+      exact = stationOnly.find((d) => {
+        const n = normalize(d.place_name);
+        return n.includes(target) || target.includes(n);
+      });
+      if (!exact) {
+        // 그래도 없으면, 그나마 가장 가까운 지하철역이라도 (완전히 다른 역일 수 있어서 최후의 수단)
+        const nearest = await searchKakaoStationCategory(lat, lng).catch(() => ({ documents: [] }));
+        stationFallback = (nearest.documents || [])[0] || null;
+      }
+    }
+
+    const ordered = exact ? [exact] : (stationFallback ? [stationFallback] : (radiusDocs.length ? radiusDocs : plainDocs));
     const results = ordered.map((d) => ({
       name: d.place_name,
       lat: parseFloat(d.y),
