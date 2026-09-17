@@ -3,8 +3,10 @@
   const FACE_KEY = 'run-pacer-face-photo';
   let currentStream = null;
   let route = null;       // { points, distanceMeters, turns }
+  let currentRouteOptions = []; // 신호등 개수별 대안 경로들 (경로가 준비된 화면에서 고를 수 있음)
   let mapHelper = null;   // route.js의 renderOnMap 결과 (MapLibre)
   let watchId = null;
+  let elapsedTimer = null; // 러닝 중 경과시간(스톱워치) 1초마다 갱신하는 인터벌
   let lastPos = null;
   let traveledMeters = 0;
   let startedAt = null;
@@ -112,6 +114,11 @@
     const face = localStorage.getItem(FACE_KEY);
     $('profile-face-preview').src = face || '';
     $('profile-goal-input').value = cachedProfile?.goalKm || '';
+    if (currentUser) {
+      Auth.isPublished(currentUser.uid).then((pub) => {
+        $('profile-publish-toggle').checked = pub;
+      }).catch(() => {});
+    }
   }
 
   /* ---------------- 2. 목적지/거리 설정 ---------------- */
@@ -152,8 +159,25 @@
         announce('출발할게요.');
         Music.startForRun();
         startGpsTracking();
+        if (elapsedTimer) clearInterval(elapsedTimer);
+        updateElapsedDisplay();
+        elapsedTimer = setInterval(updateElapsedDisplay, 1000);
       }
-    }, 700);
+    }, 900);
+  }
+
+  // 러닝 중 경과시간을 mm:ss(1시간 넘으면 h:mm:ss)로 화면에 표시 - GPS 신호와 무관하게 1초마다 갱신
+  function updateElapsedDisplay() {
+    if (!startedAt) return;
+    const totalSec = Math.max(Math.floor((Date.now() - startedAt) / 1000), 0);
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    const text = h > 0
+      ? `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`
+      : `${m}:${s.toString().padStart(2, '0')}`;
+    const el = $('stat-elapsed');
+    if (el) el.textContent = text;
   }
 
   // 실제 나침반(자기센서) 방향을 읽어서, 가만히 서서 몸만 돌려도 지도가 같이 돌게 함
@@ -203,6 +227,9 @@
     traveledMeters = 0;
     $('turn-banner').classList.add('hidden');
     $('btn-start-run').classList.add('hidden');
+    $('route-ready-sub').textContent = '경로가 준비됐어요';
+    $('crosswalk-selector').classList.add('hidden');
+    currentRouteOptions = [];
 
     navigator.geolocation.getCurrentPosition(async (pos) => {
       const start = { lat: pos.coords.latitude, lng: pos.coords.longitude };
@@ -221,7 +248,22 @@
         currentBearing = mapHelper.initialBearing || 0;
         updateMarker(0, currentBearing, false);
         $('stat-distance').textContent = (route.distanceMeters / 1000).toFixed(1) + 'km';
-        announce('경로 준비됐어요. 시작 버튼을 눌러주세요.');
+
+        // 경로가 이미 채점된 경우(공원 경유/왕복 후보 비교) crosswalkCount가 붙어있고,
+        // 직선 경로 그대로 쓴 경우엔 여기서 한 번 계산해서 시작 전에 미리 보여줌
+        const crosswalkCount = typeof route.crosswalkCount === 'number'
+          ? route.crosswalkCount
+          : await RouteEngine.countCrosswalksNear(route.points).catch(() => 0);
+        route.crosswalkCount = crosswalkCount;
+        const readySub = crosswalkCount === 0
+          ? '횡단보도 없이 갈 수 있어요'
+          : `횡단보도 ${crosswalkCount}회 예상돼요`;
+        $('route-ready-sub').textContent = readySub;
+        renderCrosswalkOptions(route);
+
+        announce(crosswalkCount === 0
+          ? '경로 준비됐어요. 횡단보도 없이 갈 수 있어요. 시작 버튼을 눌러주세요.'
+          : `경로 준비됐어요. 횡단보도 ${crosswalkCount}번 건너요. 시작 버튼을 눌러주세요.`);
         $('btn-start-run').classList.remove('hidden');
       } catch (e) {
         announce('경로를 만드는 데 실패했어요. ' + e.message);
@@ -229,11 +271,66 @@
     }, () => announce('위치 정보를 가져올 수 없어요. GPS를 켜주세요.'), { enableHighAccuracy: true });
   }
 
+  // 채점된 대안 경로들(있다면)을 신호등 개수 기준으로 중복 없이 정리해서 칩으로 보여줌.
+  // 대안이 1개뿐이면(선택할 게 없으면) UI 자체를 숨김.
+  function renderCrosswalkOptions(chosenRoute) {
+    const rawOptions = chosenRoute.routeOptions?.length ? chosenRoute.routeOptions : [chosenRoute];
+    const seen = new Set();
+    const options = [];
+    for (const opt of rawOptions) {
+      const count = typeof opt.crosswalkCount === 'number' ? opt.crosswalkCount : chosenRoute.crosswalkCount;
+      if (seen.has(count)) continue; // 같은 개수면 이미 더 좋은 점수의 후보가 앞에 있었던 것
+      seen.add(count);
+      options.push({ ...opt, crosswalkCount: count });
+    }
+    options.sort((a, b) => a.crosswalkCount - b.crosswalkCount);
+    currentRouteOptions = options;
+
+    const box = $('crosswalk-selector');
+    const chipsEl = $('crosswalk-selector-chips');
+    chipsEl.innerHTML = '';
+    if (options.length <= 1) {
+      box.classList.add('hidden');
+      return;
+    }
+    options.forEach((opt) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'crosswalk-chip' + (opt.crosswalkCount === chosenRoute.crosswalkCount ? ' active' : '');
+      chip.textContent = opt.crosswalkCount === 0 ? '0회' : `${opt.crosswalkCount}회`;
+      chip.addEventListener('click', () => applyRouteOption(opt));
+      chipsEl.appendChild(chip);
+    });
+    box.classList.remove('hidden');
+  }
+
+  // 사용자가 칩을 눌러 다른 신호등 개수의 경로를 고른 경우: 실제 진행 경로를 바꿔치기하고 지도/안내를 다시 그림
+  function applyRouteOption(opt) {
+    route = opt;
+    mapHelper = RouteEngine.renderOnMap($('map-canvas'), route.points, mapHelper?.map);
+    currentBearing = mapHelper.initialBearing || 0;
+    updateMarker(0, currentBearing, false);
+    $('stat-distance').textContent = (route.distanceMeters / 1000).toFixed(1) + 'km';
+    $('route-ready-sub').textContent = opt.crosswalkCount === 0
+      ? '횡단보도 없이 갈 수 있어요'
+      : `횡단보도 ${opt.crosswalkCount}회 예상돼요`;
+    renderCrosswalkOptions(route);
+    announce(opt.crosswalkCount === 0
+      ? '횡단보도 없는 경로로 바꿨어요.'
+      : `횡단보도 ${opt.crosswalkCount}회인 경로로 바꿨어요.`);
+  }
+
   async function geocode(placeName, center) {
     // Kakao 검색으로 지명 -> 좌표 변환 (반드시 실제 현재 위치를 기준으로 검색)
     const results = await RouteEngine.searchNearby(placeName, center || lastPos);
     if (!results.length) throw new Error(`"${placeName}"을(를) 못 찾았어요`);
-    return { lat: results[0].lat, lng: results[0].lng };
+    // 기본은 거리순 첫 결과지만, 이름이 정확히 같은(공백 무시) 곳이 있으면 그게 더 가깝지 않아도 우선함
+    // - 예: "과천역"을 찾았는데 이름만 비슷한 훨씬 가까운 다른 곳이 걸려서 엉뚱한 곳으로 안내되는 걸 방지
+    const normalize = (s) => (s || '').replace(/\s/g, '').toLowerCase();
+    const target = normalize(placeName);
+    const exact = results.find((r) => normalize(r.name) === target);
+    const picked = exact || results[0];
+    return { lat: picked.lat, lng: picked.lng };
   }
 
   /* ---------------- 3. GPS 추적 + 마커/음악 연동 ---------------- */
@@ -299,6 +396,7 @@
   // manual=true면 목표거리 도착 전에 사용자가 직접 "종료하기"를 누른 경우
   function finishRun(manual) {
     if (watchId) navigator.geolocation.clearWatch(watchId);
+    if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
     const km = traveledMeters / 1000;
     const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
     const elapsedMin = elapsedSec / 60;
@@ -315,6 +413,10 @@
         distanceKm: km,
         durationSec: elapsedSec,
         paceMinPerKm,
+      }).then(() => Auth.isPublished(currentUser.uid)).then((pub) => {
+        if (!pub) return;
+        const displayName = cachedProfile?.username || cachedProfile?.name || '러너';
+        return Auth.publishLeaderboard(currentUser.uid, displayName);
       }).catch(console.warn);
     }
 
@@ -511,6 +613,40 @@
       renderPaceChart(runs);
       renderRunHistoryList(runs);
     } catch (err) { console.warn(err); }
+    try {
+      const top = await Auth.getLeaderboardTop(10);
+      renderLeaderboard(top);
+    } catch (err) { console.warn(err); }
+  }
+
+  function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str == null ? '' : String(str);
+    return div.innerHTML;
+  }
+
+  function renderLeaderboard(list) {
+    const el = $('leaderboard-list');
+    if (!list.length) {
+      el.innerHTML = '<p class="section-empty">아직 순위에 공개한 러너가 없어요. 마이페이지에서 켜보세요!</p>';
+      return;
+    }
+    el.innerHTML = list.map((row, i) => {
+      const isMe = currentUser && row.uid === currentUser.uid;
+      let paceStr = '-';
+      if (row.avgPaceMinPerKm > 0) {
+        const pMin = Math.floor(row.avgPaceMinPerKm);
+        const pSec = Math.round((row.avgPaceMinPerKm - pMin) * 60);
+        paceStr = `${pMin}'${pSec.toString().padStart(2, '0')}"`;
+      }
+      return `
+        <div class="leaderboard-row${isMe ? ' me' : ''}">
+          <span class="leaderboard-rank">${i + 1}</span>
+          <span class="leaderboard-name">${escapeHtml(row.displayName || '러너')}</span>
+          <span class="leaderboard-km">${(row.distanceKm || 0).toFixed(1)}km</span>
+          <span class="leaderboard-pace">${paceStr}</span>
+        </div>`;
+    }).join('');
   }
 
   function renderHomeHero() {
@@ -846,6 +982,26 @@
         refreshGoalHeader();
         Voice.speak('목표 거리를 저장했어요');
       } catch (err) { console.warn(err); }
+    });
+    $('profile-publish-toggle').addEventListener('change', async (e) => {
+      if (!currentUser) { e.target.checked = false; return; }
+      const wantPublish = e.target.checked;
+      e.target.disabled = true;
+      try {
+        if (wantPublish) {
+          const displayName = cachedProfile?.username || cachedProfile?.name || '러너';
+          await Auth.publishLeaderboard(currentUser.uid, displayName);
+          Voice.speak('이번년도 기록을 공개했어요');
+        } else {
+          await Auth.unpublishLeaderboard(currentUser.uid);
+          Voice.speak('기록 공개를 껐어요');
+        }
+      } catch (err) {
+        e.target.checked = !wantPublish; // 실패하면 되돌림
+        console.warn(err);
+      } finally {
+        e.target.disabled = false;
+      }
     });
 
     /* ---------------- 유튜브 / Spotify 노래 검색-추가 ---------------- */

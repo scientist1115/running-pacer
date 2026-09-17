@@ -138,6 +138,55 @@ const Auth = (() => {
     return snap.docs.map((d) => ({ id: d.id, ...d.data() }));
   }
 
+  // 올해 1월 1일부터 지금까지 뛴 기록만 모아서 거리 합/평균 페이스 계산 - 순위 공개용
+  async function getYearRunStats(uid) {
+    const startOfYear = new Date(new Date().getFullYear(), 0, 1);
+    const snap = await db.collection('users').doc(uid).collection('runs')
+      .where('completedAt', '>=', startOfYear)
+      .get();
+    let totalKm = 0;
+    let totalSec = 0;
+    snap.forEach((doc) => {
+      const d = doc.data();
+      totalKm += d.distanceKm || 0;
+      totalSec += d.durationSec || 0;
+    });
+    return {
+      distanceKm: totalKm,
+      avgPaceMinPerKm: totalKm > 0 ? (totalSec / 60) / totalKm : 0,
+    };
+  }
+
+  // 순위 공개 켜기: 이번 해 기록을 다시 계산해서 leaderboard/{uid} 문서로 올림 (본인만 이 문서에 쓸 수 있음)
+  async function publishLeaderboard(uid, displayName) {
+    const stats = await getYearRunStats(uid);
+    await db.collection('leaderboard').doc(uid).set({
+      displayName: displayName || '러너',
+      distanceKm: stats.distanceKm,
+      avgPaceMinPerKm: stats.avgPaceMinPerKm,
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+    });
+    return stats;
+  }
+
+  async function unpublishLeaderboard(uid) {
+    await db.collection('leaderboard').doc(uid).delete();
+  }
+
+  async function isPublished(uid) {
+    const doc = await db.collection('leaderboard').doc(uid).get();
+    return doc.exists;
+  }
+
+  // 순위 목록(거리 많은 순) - 공개하기로 한 사람만 나옴, 로그인 없이도 읽을 수 있는 컬렉션
+  async function getLeaderboardTop(limitCount = 10) {
+    const snap = await db.collection('leaderboard')
+      .orderBy('distanceKm', 'desc')
+      .limit(limitCount)
+      .get();
+    return snap.docs.map((d) => ({ uid: d.id, ...d.data() }));
+  }
+
   // Firebase 에러 코드를 한국어 메시지로 변환
   function toKoreanError(err) {
     const code = err?.code || '';
@@ -153,5 +202,6 @@ const Auth = (() => {
   return {
     signUp, logIn, logInWithGoogle, onAuthChange, signOut, isValidId, isValidPassword,
     checkUsernameAvailable, getProfile, saveGoal, addDistance, saveRun, listRuns, toKoreanError,
+    getYearRunStats, publishLeaderboard, unpublishLeaderboard, isPublished, getLeaderboardTop,
   };
 })();

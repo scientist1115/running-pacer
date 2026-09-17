@@ -65,17 +65,18 @@ const RouteEngine = (() => {
     }
   }
 
-  // 후보 경로 여러 개 중 횡단보도+나쁜 노면이 가장 적은 걸 고름 (전부 병렬로 채점)
+  // 후보 경로 여러 개 중 횡단보도+나쁜 노면이 가장 적은 순으로 점수 매겨 정렬해서 전부 반환
+  // (전부 병렬로 채점) - [0]이 가장 좋은 경로, 나머지는 "신호등 몇 개까지 괜찮아요?" 선택용 대안
   async function pickBestRoute(candidates) {
     const scored = await Promise.all(candidates.map(async (c) => {
       const [crosswalks, badSurface] = await Promise.all([
         countCrosswalksNear(c.points),
         countBadSurfaceNear(c.points),
       ]);
-      return { c, score: crosswalks * 2 + badSurface };
+      return { ...c, crosswalkCount: crosswalks, score: crosswalks * 2 + badSurface };
     }));
     scored.sort((a, b) => a.score - b.score);
-    return scored[0].c;
+    return scored;
   }
 
   // 목적지 + 목표거리: 직선 경로가 짧으면 근처 공원 후보 몇 곳을 경유하는 경로를 만들어서
@@ -88,7 +89,7 @@ const RouteEngine = (() => {
     const parks = await searchNearby('공원', start).catch(() => []);
     if (parks.length === 0) return direct;
 
-    const results = await Promise.all(parks.slice(0, 2).map(async (via) => {
+    const results = await Promise.all(parks.slice(0, 4).map(async (via) => {
       try {
         const [leg1, leg2] = await Promise.all([
           fetchWalkRoute(start, { lat: via.lat, lng: via.lng }),
@@ -109,16 +110,29 @@ const RouteEngine = (() => {
 
     // 목표거리를 채우는 후보들 중에서 고르고, 하나도 없으면 그나마 가장 긴 걸로
     const qualifying = candidates.filter((c) => c.distanceMeters / 1000 >= targetKm - 0.3);
-    return pickBestRoute(qualifying.length ? qualifying : candidates);
+    const scored = await pickBestRoute(qualifying.length ? qualifying : candidates);
+    return { ...scored[0], routeOptions: scored };
   }
 
-  // 목적지 없이 거리만: 근처 공원 후보 몇 곳을 반환점으로 삼아 "왕복"(간 길 그대로 되돌아오기) 경로를 만들고,
-  // 그중 횡단보도/나쁜 노면이 가장 적은 경로를 고름
+  // 목적지 없이 거리만: 근처 공원 몇 곳 + 시작점 기준 6방향으로 목표거리 절반만큼 떨어진 가상 지점들을
+  // 반환점 후보로 삼아 "왕복"(간 길 그대로 되돌아오기) 경로를 여러 개 만들고,
+  // 그중 목표거리에 맞으면서 횡단보도/나쁜 노면이 가장 적은 경로를 고름.
+  // 공원만 후보로 쓰면 근처에 마침 맞는 거리의 공원이 없을 때 목표거리와 크게 어긋난 경로만 나오는
+  // 문제가 있어서, 방향 기반 가상 지점을 같이 써서 항상 목표거리에 가까운 후보를 확보함.
   async function buildLoopRoute(start, targetKm) {
     const parks = await searchNearby('공원', start).catch(() => []);
-    if (parks.length === 0) throw new Error('근처에 추천할 만한 공원을 못 찾았어요');
+    const parkTurnarounds = parks.slice(0, 3).map((p) => ({ lat: p.lat, lng: p.lng, name: p.name }));
 
-    const results = await Promise.all(parks.slice(0, 2).map(async (turnaround) => {
+    const halfMeters = (targetKm * 1000) / 2;
+    const bearingTurnarounds = [0, 60, 120, 180, 240, 300].map((bearing, i) => {
+      const pt = destinationPoint(start, bearing, halfMeters);
+      return { lat: pt.lat, lng: pt.lng, name: `${targetKm}km 코스 ${i + 1}` };
+    });
+
+    const allTurnarounds = [...parkTurnarounds, ...bearingTurnarounds];
+    if (allTurnarounds.length === 0) throw new Error('근처에 추천할 만한 경로를 못 찾았어요');
+
+    const results = await Promise.all(allTurnarounds.map(async (turnaround) => {
       try {
         const out = await fetchWalkRoute(start, { lat: turnaround.lat, lng: turnaround.lng });
         const backPoints = [...out.points].reverse(); // 왕복이니 갔던 길 그대로 되돌아옴
@@ -137,7 +151,10 @@ const RouteEngine = (() => {
 
     // 목표거리(±20%)에 맞는 후보들 중에서 고르고, 없으면 거리가 제일 가까운 걸로
     const qualifying = candidates.filter((c) => Math.abs(c.distanceMeters / 1000 - targetKm) <= targetKm * 0.2);
-    if (qualifying.length) return pickBestRoute(qualifying);
+    if (qualifying.length) {
+      const scored = await pickBestRoute(qualifying);
+      return { ...scored[0], routeOptions: scored };
+    }
     candidates.sort((a, b) => Math.abs(a.distanceMeters / 1000 - targetKm) - Math.abs(b.distanceMeters / 1000 - targetKm));
     return candidates[0];
   }
@@ -337,6 +354,6 @@ const RouteEngine = (() => {
 
   return {
     fetchWalkRoute, searchNearby, pickBestRoute, buildRouteToDestination, buildLoopRoute,
-    renderOnMap, haversineMeters, computeBearing, destinationPoint,
+    renderOnMap, haversineMeters, computeBearing, destinationPoint, countCrosswalksNear,
   };
 })();

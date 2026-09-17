@@ -117,6 +117,14 @@
 
     <div class="section-card">
       <div class="section-card-head">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4z"/><path d="M7 5H4a2 2 0 0 0 2 4M17 5h3a2 2 0 0 1-2 4"/></svg>
+        이번년도 순위
+      </div>
+      <div id="leaderboard-list"></div>
+    </div>
+
+    <div class="section-card">
+      <div class="section-card-head">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg>
         지난 경로
       </div>
@@ -169,6 +177,16 @@
       <input type="number" id="profile-goal-input" placeholder="목표 거리(km)" min="1" />
       <button id="btn-profile-goal-save" class="btn-primary" style="margin-top: 10px;">저장</button>
     </div>
+    <div class="profile-toggle-row">
+      <div>
+        <p class="onboard-sub" style="margin-bottom:2px;">이번년도 기록 공개하기</p>
+        <p class="profile-toggle-hint">켜면 홈 화면 순위에 닉네임·이번년도 거리·페이스가 공개돼요</p>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="profile-publish-toggle" />
+        <span class="switch-track"></span>
+      </label>
+    </div>
     <div style="margin-top: 20px;">
       <p class="onboard-sub" style="margin-bottom: 8px;">러닝 음악</p>
       <input type="file" id="music-file-input" accept="audio/*" multiple class="hidden" />
@@ -209,11 +227,16 @@
         <span id="turn-dist">-</span>
         <span id="turn-desc">-</span>
       </div>
+      <div id="crosswalk-selector" class="hidden">
+        <div class="crosswalk-selector-label">신호등이 불편하면 골라보세요</div>
+        <div id="crosswalk-selector-chips" class="crosswalk-selector-chips"></div>
+        <div class="crosswalk-selector-hint">개수를 줄이면 목적지 대신 근처를 빙 도는 경로가 나올 수 있어요</div>
+      </div>
       <button id="btn-start-run" class="cta-card hidden" type="button" style="position:absolute; left:16px; right:16px; bottom:16px; margin:0; z-index:700;">
         <span class="cta-icon"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg></span>
         <span>
           <div class="cta-title">러닝 시작하기</div>
-          <div class="cta-sub">경로가 준비됐어요</div>
+          <div class="cta-sub" id="route-ready-sub">경로가 준비됐어요</div>
         </span>
       </button>
       <button id="mic-btn">
@@ -228,6 +251,7 @@
       <div class="hero-label">페이스</div>
       <div class="hero-value" id="stat-pace">-'--"</div>
       <div class="hero-sub-row">
+        <div class="hero-sub-item"><span id="stat-elapsed">0:00</span><label>경과시간</label></div>
         <div class="hero-sub-item"><span id="stat-distance">-</span><label>남은거리</label></div>
         <div class="hero-sub-item"><span id="stat-eta">-</span><label>도착예정</label></div>
       </div>
