@@ -349,6 +349,7 @@
     const target = normalize(placeName);
     const exact = results.find((r) => normalize(r.name) === target);
     const picked = exact || results[0];
+    console.log(`[목적지 검색] "${placeName}" -> "${picked.name}" (${picked.lat}, ${picked.lng})`, results);
     return { lat: picked.lat, lng: picked.lng };
   }
 
