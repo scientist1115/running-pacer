@@ -318,7 +318,7 @@ html, body {
 
 #mic-btn {
   position: absolute;
-  bottom: 190px;
+  top: 150px;
   right: 20px;
   width: 58px;
   height: 58px;
@@ -375,7 +375,10 @@ html, body {
 #youtube-player-box {
   position: absolute; bottom: 12px; left: 12px;
   border-radius: 10px; overflow: hidden; opacity: 0.9; z-index: 500;
+  transition: transform 0.2s;
 }
+/* AR 카메라 화면 위에서는 몰입감을 안 깨게 작게 줄임 */
+.ar-active #youtube-player-box { transform: scale(0.55); transform-origin: bottom left; opacity: 0.65; }
 
 #turn-banner {
   position: absolute; top: 16px; left: 16px; right: 16px;

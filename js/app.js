@@ -570,15 +570,18 @@
     const next = route.turns[announcedTurnCount];
     if (!next.lat || !next.lng) { announcedTurnCount++; return; }
     const dist = haversine(currentPos, next);
+    const desc = next.description || '방향 전환';
 
     // 배너는 매번 최신 거리로 갱신해서 항상 다음 회전까지 얼마나 남았는지 보여줌
     $('turn-dist').textContent = `${Math.round(dist)}m`;
-    $('turn-desc').textContent = next.description || '방향 전환';
+    $('turn-desc').textContent = desc;
     $('turn-banner').classList.remove('hidden');
+    // 음성 캡션도 항상 배너와 같은 내용으로 맞춰서, 서로 다른 회전 정보를 동시에 보여주지 않게 함
+    $('voice-caption-text').textContent = desc;
 
     if (dist < 40) {
       announcedTurnCount++;
-      if (next.description) announce(next.description);
+      Voice.speak(desc);
     }
   }
 
@@ -626,6 +629,7 @@
       arResizeHandler = resize;
       window.addEventListener('resize', arResizeHandler);
       arCtx = canvas.getContext('2d');
+      $('map-area').classList.add('ar-active');
     } catch (e) {
       console.warn('카메라를 열 수 없어요:', e.message);
       announce('카메라를 열 수 없어서 지도로 안내할게요.');
@@ -636,6 +640,7 @@
   function stopArCamera() {
     if (arStream) { arStream.getTracks().forEach((t) => t.stop()); arStream = null; }
     $('ar-layer').classList.add('hidden');
+    $('map-area').classList.remove('ar-active');
     if (arResizeHandler) { window.removeEventListener('resize', arResizeHandler); arResizeHandler = null; }
     arCtx = null;
   }
@@ -662,27 +667,49 @@
     return result;
   }
 
-  // ^ 모양 셰브론 하나를 그림 - 네온처럼 발광하는 느낌을 주기 위해 shadowBlur를 씀
+  // ^ 모양 셰브론 하나를 그림 - 바깥쪽 흐린 글로우 + 안쪽 밝은 선, 두 번 겹쳐 그려서 네온처럼 보이게 함
   function drawChevron(ctx, x, y, angleDeg, size, color) {
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate((angleDeg * Math.PI) / 180);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = Math.max(2, size * 0.28);
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-    ctx.shadowColor = color;
-    ctx.shadowBlur = size * 0.9;
     ctx.beginPath();
     ctx.moveTo(-size * 0.55, size * 0.4);
     ctx.lineTo(0, -size * 0.5);
     ctx.lineTo(size * 0.55, size * 0.4);
+    // 바깥쪽 흐린 글로우(굵고 연하게)
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = 0.55;
+    ctx.lineWidth = Math.max(4, size * 0.55);
+    ctx.shadowColor = color;
+    ctx.shadowBlur = size * 1.4;
+    ctx.stroke();
+    // 안쪽 밝은 선(가늘고 선명하게, 거의 흰색에 가깝게)
+    ctx.globalAlpha = 1;
+    ctx.lineWidth = Math.max(2, size * 0.2);
+    ctx.strokeStyle = '#EAFFFB';
+    ctx.shadowBlur = size * 0.6;
     ctx.stroke();
     ctx.restore();
   }
 
-  // 지금 위치·진행방향(나침반) 기준으로, 앞으로 60m 구간을 여러 점으로 쪼개 원근감 있게
-  // 계산한 다음 발광 리본 선 + 그 위에 일정 간격으로 셰브론들을 띄워서 그림.
+  // 점들을 부드러운 곡선으로 이어서 그림(각진 꺾임 없이) - 각 점 사이 중점을 이용한 2차 베지어 방식
+  function strokeSmoothPath(ctx, pts) {
+    if (pts.length < 2) return;
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length - 1; i++) {
+      const mx = (pts[i].x + pts[i + 1].x) / 2;
+      const my = (pts[i].y + pts[i + 1].y) / 2;
+      ctx.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+    }
+    const last = pts[pts.length - 1];
+    ctx.lineTo(last.x, last.y);
+  }
+
+  // 지금 위치·진행방향(나침반) 기준으로, 앞으로 110m 구간을 여러 점으로 쪼개 원근감 있게
+  // 계산한 다음 발광 리본 선(부드러운 곡선) + 그 위에 촘촘하게 셰브론들을 띄워서 그림.
   // 걸을수록 지나간 점이 빠지면서 "리본이 줄어드는" 느낌을 냄.
   // 카메라 수평 화각은 기기마다 달라서 실제 값을 알 수 없어 60도로 추정함 - 완벽히 정확하진 않고,
   // 진짜 ARKit처럼 바닥에 달라붙진 않지만(웹에선 그 기능 자체를 못 씀) 방향 감각은 확실히 좋아짐
@@ -694,9 +721,9 @@
     arCtx.clearRect(0, 0, w, h);
     if (!route.points || route.points.length < 2) return;
 
-    const NEAR = 3;
-    const FAR = 60;
-    const STEP = 3;
+    const NEAR = 2;
+    const FAR = 110;
+    const STEP = 2;
     const distances = [];
     for (let d = NEAR; d <= FAR; d += STEP) distances.push(traveledMeters + d);
     const pathPoints = pointsAlongRoute(route.points, distances);
@@ -704,42 +731,55 @@
 
     const FOV = 60; // 후면 카메라 대략적인 수평 화각 추정치(도)
     const half = FOV / 2;
-    const horizonY = h * 0.42; // 소실점 높이
-    const groundY = h * 0.95;  // 가장 가까운 지점이 나타나는 높이(화면 하단 근처)
-    const color = '#4FD8FF'; // 참고 이미지처럼 시안-블루 네온 톤
+    const horizonY = h * 0.38; // 소실점 높이
+    const groundY = h * 0.97;  // 가장 가까운 지점이 나타나는 높이(화면 하단 근처)
+    const color = '#38E1FF'; // 참고 이미지처럼 밝은 시안-블루 네온 톤
 
     const screenPts = pathPoints.map((pt, i) => {
       const dist = NEAR + i * STEP;
       const bearingToPt = RouteEngine.computeBearing(cur, pt);
       const rel = ((bearingToPt - headingDeg + 540) % 360) - 180; // -180..180
-      const withinView = Math.abs(rel) <= half * 1.3;
-      const depthT = Math.min(dist / FAR, 1); // 0(가까움) ~ 1(멀리)
-      const y = groundY + (horizonY - groundY) * depthT;
-      const spread = 1 - depthT * 0.75; // 멀어질수록 좌우로 덜 벌어지게 해서 원근감을 냄
+      const withinView = Math.abs(rel) <= half * 1.4;
+      const depthT = Math.min(dist / FAR, 1); // 0(가까움) ~ 1(멀리) - 제곱을 줘서 먼 쪽은 더 빨리 모이게(원근감 강조)
+      const depthCurve = depthT * depthT;
+      const y = groundY + (horizonY - groundY) * depthCurve;
+      const spread = 1 - depthCurve * 0.82;
       const x = w / 2 + (rel / half) * (w * 0.42) * spread;
-      const size = Math.max(w, h) * (0.1 - depthT * 0.055); // 멀어질수록 작아짐
+      const size = Math.max(w, h) * (0.13 - depthCurve * 0.09);
       return { x, y, withinView, rel, size };
     });
 
-    // 발광 리본 선 - 화면 안에 있는 점들만 이어서 그림 (화면 밖으로 나가면 선이 자연스럽게 끊김)
-    arCtx.save();
-    arCtx.lineWidth = Math.max(4, w * 0.014);
-    arCtx.strokeStyle = color;
-    arCtx.globalAlpha = 0.55;
-    arCtx.lineCap = 'round';
-    arCtx.lineJoin = 'round';
-    arCtx.shadowColor = color;
-    arCtx.shadowBlur = w * 0.02;
-    arCtx.beginPath();
-    let started = false;
+    // 화면 안에 있는 점들만 이어서 부드러운 곡선 리본을 그림 (밖으로 나가면 자연스럽게 끊김)
+    const visibleRuns = [];
+    let run = [];
     screenPts.forEach((p) => {
-      if (!p.withinView) { started = false; return; }
-      if (!started) { arCtx.moveTo(p.x, p.y); started = true; } else arCtx.lineTo(p.x, p.y);
+      if (p.withinView) { run.push(p); } else if (run.length) { visibleRuns.push(run); run = []; }
     });
-    arCtx.stroke();
-    arCtx.restore();
+    if (run.length) visibleRuns.push(run);
 
-    // 리본 위에 일정 간격(9m마다)으로 셰브론을 띄워서 진행 방향을 표시
+    visibleRuns.forEach((pts) => {
+      if (pts.length < 2) return;
+      arCtx.save();
+      strokeSmoothPath(arCtx, pts);
+      // 바깥 글로우
+      arCtx.strokeStyle = color;
+      arCtx.globalAlpha = 0.45;
+      arCtx.lineWidth = Math.max(6, w * 0.028);
+      arCtx.lineCap = 'round';
+      arCtx.lineJoin = 'round';
+      arCtx.shadowColor = color;
+      arCtx.shadowBlur = w * 0.035;
+      arCtx.stroke();
+      // 안쪽 밝은 코어
+      arCtx.globalAlpha = 0.9;
+      arCtx.lineWidth = Math.max(2, w * 0.008);
+      arCtx.strokeStyle = '#EAFFFB';
+      arCtx.shadowBlur = w * 0.015;
+      arCtx.stroke();
+      arCtx.restore();
+    });
+
+    // 리본 위에 촘촘하게(6m마다) 셰브론을 띄워서 진행 방향을 표시
     screenPts.forEach((p, i) => {
       if (!p.withinView || i % 3 !== 0) return;
       drawChevron(arCtx, p.x, p.y, p.rel, p.size, color);
@@ -749,7 +789,7 @@
     const first = screenPts[0];
     if (first && !first.withinView) {
       const x = first.rel > 0 ? w - first.size : first.size;
-      drawChevron(arCtx, x, h * 0.6, first.rel > 0 ? 90 : -90, first.size * 1.3, '#FFB238');
+      drawChevron(arCtx, x, h * 0.62, first.rel > 0 ? 90 : -90, first.size * 1.4, '#FFB238');
     }
   }
 
