@@ -8,6 +8,7 @@
   let arStream = null;
   let arCtx = null;
   let arResizeHandler = null;
+  let arUsingXr = false;
   let currentStream = null;
   let route = null;       // { points, distanceMeters, turns }
   let currentRouteOptions = []; // 신호등 개수별 대안 경로들 (경로가 준비된 화면에서 고를 수 있음)
@@ -454,7 +455,10 @@
 
     const progress = route ? Math.min(traveledMeters / route.distanceMeters, 1) : 0;
     updateMarker(progress, currentBearing, isMoving);
-    if (arModeEnabled) updateArOverlay(cur, currentBearing);
+    if (arModeEnabled) {
+      if (arUsingXr) ArXR.updatePath(getLookaheadPathPoints());
+      else updateArOverlay(cur, currentBearing);
+    }
     updateStats(progress, speed);
     refreshGoalHeader();
     checkUpcomingTurn(cur);
@@ -617,10 +621,34 @@
     // isMoving이 false면 카메라를 그대로 둬서 "멈추면 화면도 멈춤"을 구현
   }
 
-  // AR 모드: 후면 카메라를 켜고 그 화면 위에 캔버스로 화살표를 그림. 실패하면 지도 모드로 조용히 돌아감
+  // AR 모드 진입점: 이 기기가 WebXR(진짜 공간 인식, 안드로이드 크롬)을 지원하면 그걸 먼저 시도하고,
+  // 안 되거나 실패하면 나침반 기반 2D 카메라 방식으로 조용히 전환함
   async function startArCamera() {
+    const xrOk = await ArXR.isSupported().catch(() => false);
+    if (xrOk) {
+      try {
+        await startArXr();
+        return;
+      } catch (e) {
+        console.warn('WebXR AR 시작 실패, 2D 방식으로 대체:', e.message);
+      }
+    }
+    await startAr2D();
+  }
+
+  async function startArXr() {
+    $('ar-layer').classList.remove('hidden');
+    $('ar-video').classList.add('hidden'); // XR은 카메라 합성을 브라우저가 자체적으로 해줘서 video 요소가 필요 없음
+    const canvas = $('ar-canvas');
+    await ArXR.start(canvas, currentBearing, lastPos || { lat: 0, lng: 0 });
+    arUsingXr = true;
+    $('map-area').classList.add('ar-active');
+  }
+
+  async function startAr2D() {
     try {
       arStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+      $('ar-video').classList.remove('hidden');
       $('ar-video').srcObject = arStream;
       $('ar-layer').classList.remove('hidden');
       const canvas = $('ar-canvas');
@@ -629,6 +657,7 @@
       arResizeHandler = resize;
       window.addEventListener('resize', arResizeHandler);
       arCtx = canvas.getContext('2d');
+      arUsingXr = false;
       $('map-area').classList.add('ar-active');
     } catch (e) {
       console.warn('카메라를 열 수 없어요:', e.message);
@@ -638,11 +667,13 @@
   }
 
   function stopArCamera() {
+    if (arUsingXr) ArXR.stop();
     if (arStream) { arStream.getTracks().forEach((t) => t.stop()); arStream = null; }
     $('ar-layer').classList.add('hidden');
     $('map-area').classList.remove('ar-active');
     if (arResizeHandler) { window.removeEventListener('resize', arResizeHandler); arResizeHandler = null; }
     arCtx = null;
+    arUsingXr = false;
   }
 
   // 경로 위에서 지정한 누적거리들(distances, 오름차순)에 해당하는 좌표를 한 번에 보간해서 찾음
@@ -665,6 +696,17 @@
       result.push({ lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t });
     }
     return result;
+  }
+
+  // 지금 지나온 거리 기준으로 앞으로 몇 m까지의 경로 지점들을 촘촘하게 뽑아줌 (XR/2D 둘 다 이걸 씀)
+  function getLookaheadPathPoints() {
+    if (!route?.points) return [];
+    const NEAR = 2;
+    const FAR = 110;
+    const STEP = 2;
+    const distances = [];
+    for (let d = NEAR; d <= FAR; d += STEP) distances.push(traveledMeters + d);
+    return pointsAlongRoute(route.points, distances);
   }
 
   // ^ 모양 셰브론 하나를 그림 - 바깥쪽 흐린 글로우 + 안쪽 밝은 선, 두 번 겹쳐 그려서 네온처럼 보이게 함
@@ -719,16 +761,12 @@
     const w = canvas.width;
     const h = canvas.height;
     arCtx.clearRect(0, 0, w, h);
-    if (!route.points || route.points.length < 2) return;
-
-    const NEAR = 2;
-    const FAR = 110;
-    const STEP = 2;
-    const distances = [];
-    for (let d = NEAR; d <= FAR; d += STEP) distances.push(traveledMeters + d);
-    const pathPoints = pointsAlongRoute(route.points, distances);
+    const pathPoints = getLookaheadPathPoints();
     if (!pathPoints.length) return;
 
+    const NEAR = 2;
+    const STEP = 2;
+    const FAR = 110;
     const FOV = 60; // 후면 카메라 대략적인 수평 화각 추정치(도)
     const half = FOV / 2;
     const horizonY = h * 0.38; // 소실점 높이
