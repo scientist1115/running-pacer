@@ -5,9 +5,9 @@ const Voice = (() => {
   let onResultCallback = null;
   let comedyMode = false;
 
-  // 웃긴 모드일 때 문구 앞/뒤에 붙이는 추임새 - 랜덤으로 하나씩 골라서 매번 다르게 들리게 함
-  const COMEDY_PREFIXES = ['자자, 집중!', '얼쑤!', '짜잔!', '이것 좀 보소!', '오예!', '자, 여러분!', '어허!'];
-  const COMEDY_SUFFIXES = ['알겠죠잉?', '가봅시다!', '진짜예요!', '레츠고!', '아무튼 그렇다고요!'];
+  // 웃긴 모드일 때 문구 앞/뒤에 붙이는 구수한 아저씨 톤 추임새 - 랜덤으로 하나씩 골라서 매번 다르게 들리게 함
+  const COMEDY_PREFIXES = ['아이고!', '어허, 이 사람아!', '캬~', '야야!', '어이쿠!', '자, 이거 봐라!', '거참!'];
+  const COMEDY_SUFFIXES = ['그렇다니까!', '알았지?', '거 봐라!', '됐고, 가자!', '아무튼 그렇다고!'];
 
   function comedify(text) {
     const prefix = COMEDY_PREFIXES[Math.floor(Math.random() * COMEDY_PREFIXES.length)];
@@ -24,8 +24,8 @@ const Voice = (() => {
     const finalText = comedyMode ? comedify(text) : text;
     const utter = new SpeechSynthesisUtterance(finalText);
     utter.lang = 'ko-KR';
-    utter.rate = comedyMode ? 1.18 : 1.0;
-    utter.pitch = comedyMode ? 1.35 : 1.0;
+    utter.rate = comedyMode ? 0.92 : 1.0;   // 느긋하고 걸걸한 느낌
+    utter.pitch = comedyMode ? 0.72 : 1.0;  // 낮고 구수한 톤
     window.speechSynthesis.speak(utter);
   }
 
