@@ -2,6 +2,12 @@
 (function () {
   const FACE_KEY = 'run-pacer-face-photo';
   const COMEDY_KEY = 'run-pacer-comedy-mode';
+  const VOICE_KEY = 'run-pacer-voice-key';
+  const ARROW_MODE_KEY = 'run-pacer-arrow-mode'; // 'map' | 'ar'
+  let arModeEnabled = false;
+  let arStream = null;
+  let arCtx = null;
+  let arResizeHandler = null;
   let currentStream = null;
   let route = null;       // { points, distanceMeters, turns }
   let currentRouteOptions = []; // 신호등 개수별 대안 경로들 (경로가 준비된 화면에서 고를 수 있음)
@@ -116,11 +122,54 @@
     $('profile-face-preview').src = face || '';
     $('profile-goal-input').value = cachedProfile?.goalKm || '';
     $('profile-comedy-toggle').checked = localStorage.getItem(COMEDY_KEY) === '1';
+    renderVoiceChips();
+    renderArrowModeChips();
     if (currentUser) {
       Auth.isPublished(currentUser.uid).then((pub) => {
         $('profile-publish-toggle').checked = pub;
       }).catch(() => {});
     }
+  }
+
+  // 안내 목소리 선택 칩(기본 + 캐릭터들)을 그리고, 누르면 바로 그 목소리로 미리듣기함
+  function renderVoiceChips() {
+    const savedKey = localStorage.getItem(VOICE_KEY) || null;
+    const chipsEl = $('voice-select-chips');
+    chipsEl.innerHTML = '';
+    const options = [{ key: null, label: '기본(무료)' }, ...Voice.getVoiceOptions()];
+    options.forEach((opt) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'crosswalk-chip' + (opt.key === savedKey ? ' active' : '');
+      chip.textContent = opt.label;
+      chip.addEventListener('click', () => {
+        localStorage.setItem(VOICE_KEY, opt.key || '');
+        Voice.setVoiceKey(opt.key);
+        renderVoiceChips();
+        Voice.speak(`안녕하세요, ${opt.label} 목소리예요`);
+      });
+      chipsEl.appendChild(chip);
+    });
+  }
+
+  // 화살표 표시 방식(지도 / AR 카메라) 선택 칩 - 실제 카메라 시작/종료는 러닝 시작/종료 시점에 함
+  function renderArrowModeChips() {
+    const savedMode = localStorage.getItem(ARROW_MODE_KEY) === 'ar' ? 'ar' : 'map';
+    const chipsEl = $('arrow-mode-chips');
+    chipsEl.innerHTML = '';
+    const options = [{ key: 'map', label: '지도' }, { key: 'ar', label: 'AR 카메라' }];
+    options.forEach((opt) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'crosswalk-chip' + (opt.key === savedMode ? ' active' : '');
+      chip.textContent = opt.label;
+      chip.addEventListener('click', () => {
+        localStorage.setItem(ARROW_MODE_KEY, opt.key);
+        arModeEnabled = opt.key === 'ar';
+        renderArrowModeChips();
+      });
+      chipsEl.appendChild(chip);
+    });
   }
 
   /* ---------------- 2. 목적지/거리 설정 ---------------- */
@@ -161,6 +210,7 @@
         announce('출발할게요.');
         Music.startForRun();
         startGpsTracking();
+        if (arModeEnabled) startArCamera();
         if (elapsedTimer) clearInterval(elapsedTimer);
         updateElapsedDisplay();
         elapsedTimer = setInterval(updateElapsedDisplay, 1000);
@@ -404,6 +454,7 @@
 
     const progress = route ? Math.min(traveledMeters / route.distanceMeters, 1) : 0;
     updateMarker(progress, currentBearing, isMoving);
+    if (arModeEnabled) updateArOverlay(cur, currentBearing);
     updateStats(progress, speed);
     refreshGoalHeader();
     checkUpcomingTurn(cur);
@@ -419,6 +470,7 @@
   function finishRun(manual) {
     if (watchId) navigator.geolocation.clearWatch(watchId);
     if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+    stopArCamera();
     const km = traveledMeters / 1000;
     const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
     const elapsedMin = elapsedSec / 60;
@@ -560,6 +612,89 @@
       mapHelper.map.easeTo({ center: [lookAhead.lng, lookAhead.lat], bearing, duration: 450, easing: (t) => t });
     }
     // isMoving이 false면 카메라를 그대로 둬서 "멈추면 화면도 멈춤"을 구현
+  }
+
+  // AR 모드: 후면 카메라를 켜고 그 화면 위에 캔버스로 화살표를 그림. 실패하면 지도 모드로 조용히 돌아감
+  async function startArCamera() {
+    try {
+      arStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false });
+      $('ar-video').srcObject = arStream;
+      $('ar-layer').classList.remove('hidden');
+      const canvas = $('ar-canvas');
+      const resize = () => { canvas.width = canvas.clientWidth; canvas.height = canvas.clientHeight; };
+      resize();
+      arResizeHandler = resize;
+      window.addEventListener('resize', arResizeHandler);
+      arCtx = canvas.getContext('2d');
+    } catch (e) {
+      console.warn('카메라를 열 수 없어요:', e.message);
+      announce('카메라를 열 수 없어서 지도로 안내할게요.');
+      arModeEnabled = false;
+    }
+  }
+
+  function stopArCamera() {
+    if (arStream) { arStream.getTracks().forEach((t) => t.stop()); arStream = null; }
+    $('ar-layer').classList.add('hidden');
+    if (arResizeHandler) { window.removeEventListener('resize', arResizeHandler); arResizeHandler = null; }
+    arCtx = null;
+  }
+
+  // 경로 위에서 지금 지나온 거리 + lookaheadM 지점의 좌표를 찾음 (화살표가 가리킬 목표점)
+  function getLookaheadPoint(points, targetMeters) {
+    if (!points || points.length === 0) return null;
+    let acc = 0;
+    for (let i = 1; i < points.length; i++) {
+      const seg = haversine(points[i - 1], points[i]);
+      if (acc + seg >= targetMeters) return points[i];
+      acc += seg;
+    }
+    return points[points.length - 1];
+  }
+
+  function drawArrowShape(ctx, x, y, angleDeg, size, color) {
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate((angleDeg * Math.PI) / 180);
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.moveTo(0, -size);
+    ctx.lineTo(size * 0.6, size * 0.6);
+    ctx.lineTo(0, size * 0.25);
+    ctx.lineTo(-size * 0.6, size * 0.6);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // 지금 위치·진행방향(나침반) 기준으로 카메라 화면 어디에 화살표를 그릴지 계산해서 그림.
+  // 카메라 수평 화각은 기기마다 달라서 실제 값을 알 수 없어 60도로 추정함 - 완벽히 정확하진 않음
+  function updateArOverlay(cur, headingDeg) {
+    if (!arCtx || !route || typeof headingDeg !== 'number') return;
+    const canvas = $('ar-canvas');
+    const w = canvas.width;
+    const h = canvas.height;
+    arCtx.clearRect(0, 0, w, h);
+
+    const target = getLookaheadPoint(route.points, traveledMeters + 20);
+    if (!target) return;
+    const bearingToTarget = RouteEngine.computeBearing(cur, target);
+    const rel = ((bearingToTarget - headingDeg + 540) % 360) - 180; // -180..180로 정규화
+
+    const FOV = 60; // 후면 카메라 대략적인 수평 화각 추정치(도)
+    const half = FOV / 2;
+    const cx = w / 2;
+    const cy = h * 0.6;
+    const arrowSize = Math.min(w, h) * 0.11;
+
+    if (Math.abs(rel) <= half) {
+      const x = cx + (rel / half) * (w * 0.35);
+      drawArrowShape(arCtx, x, cy, rel, arrowSize, '#2BD97C');
+    } else {
+      // 목표 방향이 화면 밖이면 가장자리에 그쪽으로 돌라는 화살표를 표시
+      const x = rel > 0 ? w - arrowSize : arrowSize;
+      drawArrowShape(arCtx, x, cy, rel > 0 ? 90 : -90, arrowSize, '#FFB238');
+    }
   }
 
   function updateStats(progress, speedMs) {
@@ -791,6 +926,8 @@
   window.addEventListener('DOMContentLoaded', () => {
     Music.openDB().catch(console.warn);
     Voice.setComedyMode(localStorage.getItem(COMEDY_KEY) === '1');
+    Voice.setVoiceKey(localStorage.getItem(VOICE_KEY) || null);
+    arModeEnabled = localStorage.getItem(ARROW_MODE_KEY) === 'ar';
 
     const introVideo = $('intro-video');
     function leaveIntro() {
@@ -809,6 +946,7 @@
       e.preventDefault();
       interactiveAuthInProgress = true;
       try {
+        await Auth.setRememberMe($('login-remember').checked);
         const user = await Auth.logIn({ id: $('login-id').value.trim(), password: $('login-pw').value });
         currentUser = user;
         cachedProfile = await Auth.getProfile(user.uid).catch(() => null);
@@ -874,6 +1012,7 @@
     $('btn-google-login').addEventListener('click', async () => {
       interactiveAuthInProgress = true;
       try {
+        await Auth.setRememberMe($('login-remember').checked);
         const { user, isNew } = await Auth.logInWithGoogle();
         currentUser = user;
         cachedProfile = await Auth.getProfile(user.uid).catch(() => null);

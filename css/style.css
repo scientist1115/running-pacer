@@ -25,6 +25,8 @@ html, body {
   font-family: var(--font-body);
   height: 100%;
   overflow: hidden;
+  overscroll-behavior: none; /* 당겨서 새로고침, 화면 튕김 같은 브라우저 제스처 차단 */
+  touch-action: pan-y;       /* 세로 스크롤은 각 화면 안에서 허용, 좌우로 미는 제스처만 차단 */
   -webkit-user-select: none;
   user-select: none;
 }
@@ -282,6 +284,17 @@ html, body {
 .leaderboard-km { font-weight: 700; }
 .leaderboard-pace { width: 64px; flex-shrink: 0; text-align: right; color: var(--mute); font-size: 12px; }
 .leaderboard-row.me .leaderboard-pace { color: var(--go); opacity: 0.85; }
+
+.remember-row {
+  display: flex; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--mute);
+  margin: -6px 0 2px;
+}
+.remember-row input { width: 16px; height: 16px; accent-color: var(--go); }
+
+#ar-layer { position: absolute; inset: 0; z-index: 50; background: #000; }
+#ar-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+#ar-canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 
 /* 카운트다운 (3-2-1) */
 #screen-countdown { background: var(--ink); }

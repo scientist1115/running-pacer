@@ -14,6 +14,16 @@ const Auth = (() => {
   const fbAuth = firebase.auth();
   const db = firebase.firestore();
 
+  // 로그인 상태 유지 여부 - 로그인/구글로그인 직전에 호출해서 반영함.
+  // LOCAL: 브라우저를 껐다 켜도 로그인 유지 (기본값, Firebase Auth의 원래 기본 동작)
+  // SESSION: 이 탭/창을 닫으면 로그아웃됨
+  // 참고: Firebase Auth 기본 SDK는 "정확히 N일 후 자동 로그아웃" 같은 기간 지정은 지원하지 않음 -
+  // 그건 Google Cloud Identity Platform(유료, 별도 인프라) 수준의 기능이라 여기선 두 모드만 제공함
+  async function setRememberMe(remember) {
+    const mode = remember ? firebase.auth.Auth.Persistence.LOCAL : firebase.auth.Auth.Persistence.SESSION;
+    await fbAuth.setPersistence(mode);
+  }
+
   // Firebase 이메일/비밀번호 로그인은 이메일 형식이 필요해서,
   // 사용자가 정한 "아이디"를 내부적으로 가짜 이메일로 변환해서 씀
   const ID_DOMAIN = '@runpacer.local';
@@ -212,5 +222,6 @@ const Auth = (() => {
     signUp, logIn, logInWithGoogle, onAuthChange, signOut, isValidId, isValidPassword,
     checkUsernameAvailable, getProfile, saveGoal, addDistance, saveRun, listRuns, toKoreanError,
     getYearRunStats, publishLeaderboard, unpublishLeaderboard, isPublished, getLeaderboardTop,
+    setRememberMe,
   };
 })();

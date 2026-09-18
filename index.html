@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
 <title>런페이서</title>
 <link rel="manifest" href="manifest.json" />
 <meta name="theme-color" content="#10151A" />
@@ -37,6 +37,10 @@
     <form id="form-login" class="auth-form">
       <input type="text" id="login-id" placeholder="아이디" autocomplete="username" required />
       <input type="password" id="login-pw" placeholder="비밀번호" autocomplete="current-password" required />
+      <label class="remember-row">
+        <input type="checkbox" id="login-remember" checked />
+        <span>로그인 상태 유지하기</span>
+      </label>
       <button type="submit" class="btn-primary">로그인</button>
     </form>
 
@@ -187,6 +191,16 @@
         <span class="switch-track"></span>
       </label>
     </div>
+    <div style="margin-top: 16px;">
+      <p class="onboard-sub" style="margin-bottom: 8px;">화살표 표시 방식</p>
+      <div id="arrow-mode-chips" class="crosswalk-selector-chips"></div>
+      <p class="profile-toggle-hint" style="margin-top: 8px;">AR 카메라는 실제 카메라 화면 위에 갈 방향을 화살표로 겹쳐 보여줘요. 나침반 정확도에 따라 흔들릴 수 있어요.</p>
+    </div>
+    <div style="margin-top: 16px;">
+      <p class="onboard-sub" style="margin-bottom: 8px;">안내 목소리</p>
+      <div id="voice-select-chips" class="crosswalk-selector-chips"></div>
+      <p class="profile-toggle-hint" style="margin-top: 8px;">캐릭터 목소리는 서버에 목소리가 준비된 뒤에만 골라져요</p>
+    </div>
     <div class="profile-toggle-row">
       <div>
         <p class="onboard-sub" style="margin-bottom:2px;">이번년도 기록 공개하기</p>
@@ -232,6 +246,10 @@
   <section id="screen-run" class="screen">
     <div id="map-area">
       <div id="map-canvas"></div>
+      <div id="ar-layer" class="hidden">
+        <video id="ar-video" autoplay muted playsinline webkit-playsinline="true"></video>
+        <canvas id="ar-canvas"></canvas>
+      </div>
       <div id="youtube-player-box"><div id="youtube-player"></div></div>
       <div id="turn-banner" class="hidden">
         <span id="turn-dist">-</span>

@@ -4,6 +4,24 @@ const Voice = (() => {
   let listening = false;
   let onResultCallback = null;
   let comedyMode = false;
+  let currentAudio = null;
+
+  // 타입캐스트 캐릭터 보이스 - voice_id는 studio.typecast.ai/developers/api/voices 에서 확인해서 채워넣기
+  const TYPECAST_VOICES = {
+    yongsik: { label: '용식이', voiceId: '' },
+    gwakdupil: { label: '곽두필', voiceId: '' },
+    valkyrie: { label: '발키리', voiceId: '' },
+    hajun: { label: '하준이', voiceId: '' },
+  };
+  let selectedVoiceKey = null; // null이면 브라우저 기본 TTS
+
+  function getVoiceOptions() {
+    return Object.entries(TYPECAST_VOICES).map(([key, v]) => ({ key, label: v.label }));
+  }
+
+  function setVoiceKey(key) {
+    selectedVoiceKey = (key && TYPECAST_VOICES[key] && TYPECAST_VOICES[key].voiceId) ? key : null;
+  }
 
   // 웃긴 모드일 때 문구 앞/뒤에 붙이는 구수한 아저씨 톤 추임새 - 랜덤으로 하나씩 골라서 매번 다르게 들리게 함
   const COMEDY_PREFIXES = ['아이고!', '어허, 이 사람아!', '캬~', '야야!', '어이쿠!', '자, 이거 봐라!', '거참!'];
@@ -19,14 +37,41 @@ const Voice = (() => {
     comedyMode = !!on;
   }
 
-  function speak(text, { interrupt = true } = {}) {
-    if (interrupt) window.speechSynthesis.cancel();
-    const finalText = comedyMode ? comedify(text) : text;
-    const utter = new SpeechSynthesisUtterance(finalText);
+  function speakBrowser(text) {
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'ko-KR';
     utter.rate = comedyMode ? 0.92 : 1.0;   // 느긋하고 걸걸한 느낌
     utter.pitch = comedyMode ? 0.72 : 1.0;  // 낮고 구수한 톤
     window.speechSynthesis.speak(utter);
+  }
+
+  async function speak(text, { interrupt = true } = {}) {
+    const finalText = comedyMode ? comedify(text) : text;
+
+    if (selectedVoiceKey) {
+      const voiceId = TYPECAST_VOICES[selectedVoiceKey].voiceId;
+      try {
+        if (interrupt && currentAudio) { currentAudio.pause(); currentAudio = null; }
+        const res = await fetch('/api/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: finalText, voiceId }),
+        });
+        if (!res.ok) throw new Error('TTS 요청 실패');
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        currentAudio = new Audio(url);
+        currentAudio.play();
+        return;
+      } catch (e) {
+        console.warn('캐릭터 보이스 실패, 기본 음성으로 대체:', e.message);
+        // 아래로 흘러가서 브라우저 기본 음성으로 폴백
+      }
+    }
+
+    if (interrupt) window.speechSynthesis.cancel();
+    speakBrowser(finalText);
   }
 
   function initRecognition() {
@@ -89,5 +134,8 @@ const Voice = (() => {
     return { type: 'unknown', raw: text };
   }
 
-  return { speak, listenOnce, parseCommand, setComedyMode, get listening() { return listening; } };
+  return {
+    speak, listenOnce, parseCommand, setComedyMode, setVoiceKey, getVoiceOptions,
+    get listening() { return listening; },
+  };
 })();
