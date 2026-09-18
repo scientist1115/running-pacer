@@ -8,10 +8,10 @@ const Voice = (() => {
 
   // 타입캐스트 캐릭터 보이스 - voice_id는 studio.typecast.ai/developers/api/voices 에서 확인해서 채워넣기
   const TYPECAST_VOICES = {
-    yongsik: { label: '용식이', voiceId: '' },
-    gwakdupil: { label: '곽두필', voiceId: '' },
-    valkyrie: { label: '발키리', voiceId: '' },
-    hajun: { label: '하준이', voiceId: '' },
+    yongsik: { label: '용식이', voiceId: 'tc_5feb2085cca1a479e73bac37' },
+    gwakdupil: { label: '곽두필', voiceId: 'tc_606c6c684085209e5555abb0' },
+    valkyrie: { label: '발키리', voiceId: 'tc_60478557f12456064b353409' },
+    hajun: { label: '하준이', voiceId: 'tc_60db308484130840f23e6ca0' },
   };
   let selectedVoiceKey = null; // null이면 브라우저 기본 TTS
 
@@ -41,8 +41,11 @@ const Voice = (() => {
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = 'ko-KR';
-    utter.rate = comedyMode ? 0.92 : 1.0;   // 느긋하고 걸걸한 느낌
-    utter.pitch = comedyMode ? 0.72 : 1.0;  // 낮고 구수한 톤
+    // 참고: iOS Safari는 pitch(음높이) 조절을 대체로 무시해서(애플 쪽 제약, 코드로 못 고침),
+    // rate(속도) 변화폭을 더 크게 줘서 그나마 확실히 느껴지게 하고, 문구 추임새(comedify)가
+    // 플랫폼과 무관하게 항상 작동하니 "웃긴 느낌"의 주된 수단이 되도록 함
+    utter.rate = comedyMode ? 0.85 : 1.0;
+    utter.pitch = comedyMode ? 0.7 : 1.0;
     window.speechSynthesis.speak(utter);
   }
 

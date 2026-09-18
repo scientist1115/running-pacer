@@ -640,60 +640,116 @@
     arCtx = null;
   }
 
-  // 경로 위에서 지금 지나온 거리 + lookaheadM 지점의 좌표를 찾음 (화살표가 가리킬 목표점)
-  function getLookaheadPoint(points, targetMeters) {
-    if (!points || points.length === 0) return null;
-    let acc = 0;
-    for (let i = 1; i < points.length; i++) {
-      const seg = haversine(points[i - 1], points[i]);
-      if (acc + seg >= targetMeters) return points[i];
-      acc += seg;
+  // 경로 위에서 지정한 누적거리들(distances, 오름차순)에 해당하는 좌표를 한 번에 보간해서 찾음
+  function pointsAlongRoute(points, distances) {
+    if (!points || points.length < 2) return distances.map(() => points?.[0]).filter(Boolean);
+    const result = [];
+    let segIdx = 1;
+    let segStart = 0;
+    let segLen = haversine(points[0], points[1]);
+    for (const d of distances) {
+      while (segIdx < points.length - 1 && segStart + segLen < d) {
+        segStart += segLen;
+        segIdx++;
+        segLen = haversine(points[segIdx - 1], points[segIdx]);
+      }
+      if (segIdx >= points.length) { result.push(points[points.length - 1]); continue; }
+      const t = segLen > 0 ? Math.min(Math.max((d - segStart) / segLen, 0), 1) : 0;
+      const a = points[segIdx - 1];
+      const b = points[segIdx];
+      result.push({ lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t });
     }
-    return points[points.length - 1];
+    return result;
   }
 
-  function drawArrowShape(ctx, x, y, angleDeg, size, color) {
+  // ^ 모양 셰브론 하나를 그림 - 네온처럼 발광하는 느낌을 주기 위해 shadowBlur를 씀
+  function drawChevron(ctx, x, y, angleDeg, size, color) {
     ctx.save();
     ctx.translate(x, y);
     ctx.rotate((angleDeg * Math.PI) / 180);
-    ctx.fillStyle = color;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(2, size * 0.28);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = color;
+    ctx.shadowBlur = size * 0.9;
     ctx.beginPath();
-    ctx.moveTo(0, -size);
-    ctx.lineTo(size * 0.6, size * 0.6);
-    ctx.lineTo(0, size * 0.25);
-    ctx.lineTo(-size * 0.6, size * 0.6);
-    ctx.closePath();
-    ctx.fill();
+    ctx.moveTo(-size * 0.55, size * 0.4);
+    ctx.lineTo(0, -size * 0.5);
+    ctx.lineTo(size * 0.55, size * 0.4);
+    ctx.stroke();
     ctx.restore();
   }
 
-  // 지금 위치·진행방향(나침반) 기준으로 카메라 화면 어디에 화살표를 그릴지 계산해서 그림.
-  // 카메라 수평 화각은 기기마다 달라서 실제 값을 알 수 없어 60도로 추정함 - 완벽히 정확하진 않음
+  // 지금 위치·진행방향(나침반) 기준으로, 앞으로 60m 구간을 여러 점으로 쪼개 원근감 있게
+  // 계산한 다음 발광 리본 선 + 그 위에 일정 간격으로 셰브론들을 띄워서 그림.
+  // 걸을수록 지나간 점이 빠지면서 "리본이 줄어드는" 느낌을 냄.
+  // 카메라 수평 화각은 기기마다 달라서 실제 값을 알 수 없어 60도로 추정함 - 완벽히 정확하진 않고,
+  // 진짜 ARKit처럼 바닥에 달라붙진 않지만(웹에선 그 기능 자체를 못 씀) 방향 감각은 확실히 좋아짐
   function updateArOverlay(cur, headingDeg) {
     if (!arCtx || !route || typeof headingDeg !== 'number') return;
     const canvas = $('ar-canvas');
     const w = canvas.width;
     const h = canvas.height;
     arCtx.clearRect(0, 0, w, h);
+    if (!route.points || route.points.length < 2) return;
 
-    const target = getLookaheadPoint(route.points, traveledMeters + 20);
-    if (!target) return;
-    const bearingToTarget = RouteEngine.computeBearing(cur, target);
-    const rel = ((bearingToTarget - headingDeg + 540) % 360) - 180; // -180..180로 정규화
+    const NEAR = 3;
+    const FAR = 60;
+    const STEP = 3;
+    const distances = [];
+    for (let d = NEAR; d <= FAR; d += STEP) distances.push(traveledMeters + d);
+    const pathPoints = pointsAlongRoute(route.points, distances);
+    if (!pathPoints.length) return;
 
     const FOV = 60; // 후면 카메라 대략적인 수평 화각 추정치(도)
     const half = FOV / 2;
-    const cx = w / 2;
-    const cy = h * 0.6;
-    const arrowSize = Math.min(w, h) * 0.11;
+    const horizonY = h * 0.42; // 소실점 높이
+    const groundY = h * 0.95;  // 가장 가까운 지점이 나타나는 높이(화면 하단 근처)
+    const color = '#4FD8FF'; // 참고 이미지처럼 시안-블루 네온 톤
 
-    if (Math.abs(rel) <= half) {
-      const x = cx + (rel / half) * (w * 0.35);
-      drawArrowShape(arCtx, x, cy, rel, arrowSize, '#2BD97C');
-    } else {
-      // 목표 방향이 화면 밖이면 가장자리에 그쪽으로 돌라는 화살표를 표시
-      const x = rel > 0 ? w - arrowSize : arrowSize;
-      drawArrowShape(arCtx, x, cy, rel > 0 ? 90 : -90, arrowSize, '#FFB238');
+    const screenPts = pathPoints.map((pt, i) => {
+      const dist = NEAR + i * STEP;
+      const bearingToPt = RouteEngine.computeBearing(cur, pt);
+      const rel = ((bearingToPt - headingDeg + 540) % 360) - 180; // -180..180
+      const withinView = Math.abs(rel) <= half * 1.3;
+      const depthT = Math.min(dist / FAR, 1); // 0(가까움) ~ 1(멀리)
+      const y = groundY + (horizonY - groundY) * depthT;
+      const spread = 1 - depthT * 0.75; // 멀어질수록 좌우로 덜 벌어지게 해서 원근감을 냄
+      const x = w / 2 + (rel / half) * (w * 0.42) * spread;
+      const size = Math.max(w, h) * (0.1 - depthT * 0.055); // 멀어질수록 작아짐
+      return { x, y, withinView, rel, size };
+    });
+
+    // 발광 리본 선 - 화면 안에 있는 점들만 이어서 그림 (화면 밖으로 나가면 선이 자연스럽게 끊김)
+    arCtx.save();
+    arCtx.lineWidth = Math.max(4, w * 0.014);
+    arCtx.strokeStyle = color;
+    arCtx.globalAlpha = 0.55;
+    arCtx.lineCap = 'round';
+    arCtx.lineJoin = 'round';
+    arCtx.shadowColor = color;
+    arCtx.shadowBlur = w * 0.02;
+    arCtx.beginPath();
+    let started = false;
+    screenPts.forEach((p) => {
+      if (!p.withinView) { started = false; return; }
+      if (!started) { arCtx.moveTo(p.x, p.y); started = true; } else arCtx.lineTo(p.x, p.y);
+    });
+    arCtx.stroke();
+    arCtx.restore();
+
+    // 리본 위에 일정 간격(9m마다)으로 셰브론을 띄워서 진행 방향을 표시
+    screenPts.forEach((p, i) => {
+      if (!p.withinView || i % 3 !== 0) return;
+      drawChevron(arCtx, p.x, p.y, p.rel, p.size, color);
+    });
+
+    // 목표 방향이 화면 완전히 밖이면(급커브 등) 가장자리에 그쪽으로 돌라는 표시를 추가
+    const first = screenPts[0];
+    if (first && !first.withinView) {
+      const x = first.rel > 0 ? w - first.size : first.size;
+      drawChevron(arCtx, x, h * 0.6, first.rel > 0 ? 90 : -90, first.size * 1.3, '#FFB238');
     }
   }
 
