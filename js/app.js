@@ -1,6 +1,7 @@
 // 화면 전환 + 셀카 온보딩 + GPS 추적 + 통계 업데이트를 묶는 메인 컨트롤러
 (function () {
   const FACE_KEY = 'run-pacer-face-photo';
+  const COMEDY_KEY = 'run-pacer-comedy-mode';
   let currentStream = null;
   let route = null;       // { points, distanceMeters, turns }
   let currentRouteOptions = []; // 신호등 개수별 대안 경로들 (경로가 준비된 화면에서 고를 수 있음)
@@ -114,6 +115,7 @@
     const face = localStorage.getItem(FACE_KEY);
     $('profile-face-preview').src = face || '';
     $('profile-goal-input').value = cachedProfile?.goalKm || '';
+    $('profile-comedy-toggle').checked = localStorage.getItem(COMEDY_KEY) === '1';
     if (currentUser) {
       Auth.isPublished(currentUser.uid).then((pub) => {
         $('profile-publish-toggle').checked = pub;
@@ -788,6 +790,7 @@
   /* ---------------- 이벤트 바인딩 ---------------- */
   window.addEventListener('DOMContentLoaded', () => {
     Music.openDB().catch(console.warn);
+    Voice.setComedyMode(localStorage.getItem(COMEDY_KEY) === '1');
 
     const introVideo = $('intro-video');
     function leaveIntro() {
@@ -1003,6 +1006,12 @@
         refreshGoalHeader();
         Voice.speak('목표 거리를 저장했어요');
       } catch (err) { console.warn(err); }
+    });
+    $('profile-comedy-toggle').addEventListener('change', (e) => {
+      const on = e.target.checked;
+      localStorage.setItem(COMEDY_KEY, on ? '1' : '0');
+      Voice.setComedyMode(on);
+      Voice.speak(on ? '웃긴 모드 켰습니다' : '웃긴 모드 껐어요');
     });
     $('profile-publish-toggle').addEventListener('change', async (e) => {
       if (!currentUser) { e.target.checked = false; return; }
