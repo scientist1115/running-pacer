@@ -40,7 +40,7 @@ const RouteEngine = (() => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ points: routePoints }),
-      }, 5000);
+      }, 9000);
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) {
         console.warn('횡단보도 계산 실패:', res.status, data.error, data.sources);

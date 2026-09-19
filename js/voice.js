@@ -64,7 +64,10 @@ const Voice = (() => {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ text: finalText, voiceId }),
         });
-        if (!res.ok) throw new Error('TTS 요청 실패');
+        if (!res.ok) {
+          const errBody = await res.json().catch(() => ({}));
+          throw new Error(errBody.error || `TTS 요청 실패 (${res.status})`);
+        }
         const blob = await res.blob();
         if (myToken !== speakToken) return; // 기다리는 동안 더 최신 speak()가 있었으면 이 오래된 응답은 버림
         const url = URL.createObjectURL(blob);

@@ -22,7 +22,7 @@ module.exports = async (req, res) => {
     if (!ttsRes.ok) {
       const errText = await ttsRes.text().catch(() => '');
       console.warn('타입캐스트 TTS 실패:', ttsRes.status, errText);
-      return res.status(502).json({ error: `타입캐스트 오류 (${ttsRes.status})` });
+      return res.status(502).json({ error: `타입캐스트 오류 (${ttsRes.status}): ${errText.slice(0, 200)}` });
     }
 
     const audioBuffer = await ttsRes.arrayBuffer();
