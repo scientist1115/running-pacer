@@ -60,14 +60,15 @@ async function countGovCrosswalks(points, minLat, maxLat, minLng, maxLng) {
   }
 
   const regionFilter = await getRegionFilter(points);
-  let apiRes = await fetchWithTimeout(buildUrl(regionFilter), {}, 4000);
-  let list = extractList(await apiRes.json());
-
-  // 시군구명 표기 방식이 데이터셋마다 조금씩 달라서, 필터를 걸었는데도 결과가 통째로 비어 있으면
-  // 필터 없이 한 번 더 시도 (기존 동작으로 폴백)
-  if (regionFilter && list.length === 0) {
-    apiRes = await fetchWithTimeout(buildUrl(null), {}, 4000);
-    list = extractList(await apiRes.json());
+  // 필터 버전과 무필터 버전을 순서대로 시도하면 최악의 경우 거의 8초까지 걸릴 수 있어서,
+  // 지역필터가 있으면 두 요청을 동시에 보내고 필터 결과가 비어있을 때만 무필터 결과로 대체함
+  const [filteredRes, fallbackRes] = await Promise.all([
+    fetchWithTimeout(buildUrl(regionFilter), {}, 4000).then((r) => r.json()).catch(() => null),
+    regionFilter ? fetchWithTimeout(buildUrl(null), {}, 4000).then((r) => r.json()).catch(() => null) : Promise.resolve(null),
+  ]);
+  let list = filteredRes ? extractList(filteredRes) : [];
+  if (regionFilter && list.length === 0 && fallbackRes) {
+    list = extractList(fallbackRes);
   }
 
   let count = 0;
