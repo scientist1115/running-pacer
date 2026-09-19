@@ -545,21 +545,142 @@
       });
     }
 
-    // 오늘 페이스 변화 그래프 (250m 구간별)
-    const chartContainer = $('finish-pace-chart');
+    // 페이스 분석 대시보드 - A) 거리별 페이스, B) 페이스 분포 히스토그램, C) 최근 기록과 비교
+    const analysisContainer = $('finish-pace-analysis');
     if (paceSplits.length < 2) {
-      chartContainer.innerHTML = '<p class="onboard-sub" style="padding:8px 0;">그래프를 그리기엔 너무 짧게 뛰었어요</p>';
+      $('finish-chart-a').innerHTML = '<p class="onboard-sub" style="padding:8px 0;">그래프를 그리기엔 너무 짧게 뛰었어요</p>';
+      $('finish-chart-b').innerHTML = '';
+      $('finish-chart-c').innerHTML = '';
+      analysisContainer.innerHTML = '';
     } else {
-      const minP = Math.min(...paceSplits), maxP = Math.max(...paceSplits);
-      const W = 300, H = 100, PAD = 10;
-      const pts = paceSplits.map((p, i) => {
-        const x = PAD + (i / (paceSplits.length - 1)) * (W - PAD * 2);
-        const y = maxP === minP ? H / 2 : PAD + ((p - minP) / (maxP - minP)) * (H - PAD * 2);
-        return `${x.toFixed(1)},${y.toFixed(1)}`;
-      }).join(' ');
-      chartContainer.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
-        <polyline points="${pts}" fill="none" stroke="#2BD97C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-      </svg>`;
+      const formatPace = (p) => `${Math.floor(p)}'${Math.round((p - Math.floor(p)) * 60).toString().padStart(2, '0')}"`;
+      const avg = paceSplits.reduce((a, b) => a + b, 0) / paceSplits.length;
+      const minP = Math.min(...paceSplits);
+      const maxP = Math.max(...paceSplits);
+      const worstIdx = paceSplits.indexOf(maxP);
+      const bestIdx = paceSplits.indexOf(minP);
+      const range = maxP - minP || 1;
+
+      // A) 거리별 페이스 - 영역그래프 + 격자선 + 축 라벨 (빠를수록 위로 오게 그림)
+      {
+        const W = 320, H = 120, PADL = 34, PADR = 8, PADT = 10, PADB = 18;
+        const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
+        const n = paceSplits.length;
+        const yFor = (p) => PADT + (1 - (p - minP) / range) * plotH;
+        const xFor = (i) => PADL + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
+        const linePts = paceSplits.map((p, i) => `${xFor(i).toFixed(1)},${yFor(p).toFixed(1)}`).join(' ');
+        const areaPts = `${xFor(0).toFixed(1)},${(PADT + plotH).toFixed(1)} ${linePts} ${xFor(n - 1).toFixed(1)},${(PADT + plotH).toFixed(1)}`;
+        const gridLines = [0, 0.5, 1].map((t) => {
+          const y = PADT + t * plotH;
+          const pace = maxP - t * range;
+          return `<line x1="${PADL}" y1="${y.toFixed(1)}" x2="${W - PADR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+                  <text x="${PADL - 5}" y="${(y + 3).toFixed(1)}" font-size="8.5" fill="var(--mute)" text-anchor="end">${formatPace(pace)}</text>`;
+        }).join('');
+        const xLabels = `<text x="${PADL}" y="${H - 3}" font-size="8.5" fill="var(--mute)">0km</text>
+          <text x="${W - PADR}" y="${H - 3}" font-size="8.5" fill="var(--mute)" text-anchor="end">${(n * 0.25).toFixed(2)}km</text>`;
+        $('finish-chart-a').innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
+          ${gridLines}
+          <polygon points="${areaPts}" fill="var(--go)" opacity="0.18"/>
+          <polyline points="${linePts}" fill="none" stroke="var(--go)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          <circle cx="${xFor(worstIdx).toFixed(1)}" cy="${yFor(maxP).toFixed(1)}" r="4" fill="var(--amber)"/>
+          <circle cx="${xFor(bestIdx).toFixed(1)}" cy="${yFor(minP).toFixed(1)}" r="4" fill="#4FE3A0"/>
+          ${xLabels}
+        </svg>`;
+      }
+
+      // B) 페이스 분포 히스토그램 - 15초 단위로 구간을 나눠서 각 구간에 몇 개 세그먼트가 있었는지
+      {
+        const binSec = 15;
+        const bins = {};
+        paceSplits.forEach((p) => {
+          const key = Math.floor((p * 60) / binSec) * binSec; // 초 단위로 반올림한 구간 시작점
+          bins[key] = (bins[key] || 0) + 1;
+        });
+        const keys = Object.keys(bins).map(Number).sort((a, b) => a - b);
+        const maxCount = Math.max(...keys.map((k) => bins[k]));
+        const W = 320, H = 100, PADL = 10, PADR = 10, PADT = 10, PADB = 24;
+        const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
+        const barGap = 3;
+        const barW = keys.length ? plotW / keys.length - barGap : 0;
+        const bars = keys.map((k, i) => {
+          const count = bins[k];
+          const h = (count / maxCount) * plotH;
+          const x = PADL + i * (plotW / keys.length);
+          const y = PADT + plotH - h;
+          const label = `${Math.floor(k / 60)}'${(k % 60).toString().padStart(2, '0')}"`;
+          return `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="2" fill="var(--go)" opacity="0.8"/>
+            <text x="${(x + barW / 2).toFixed(1)}" y="${H - 6}" font-size="7.5" fill="var(--mute)" text-anchor="middle">${label}</text>`;
+        }).join('');
+        $('finish-chart-b').innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
+          <text x="${W - PADR}" y="${PADT}" font-size="8.5" fill="var(--mute)" text-anchor="end">n=${paceSplits.length}</text>
+          ${bars}
+        </svg>`;
+      }
+
+      // C) 최근 기록과 비교 - 오늘 평균 vs 최근 기록들 평균(오차막대: 표준편차). 데이터는 비동기로 채움
+      $('finish-chart-c').innerHTML = '<p class="onboard-sub" style="padding:8px 0; font-size:12.5px;">최근 기록 불러오는 중…</p>';
+      if (currentUser) {
+        Auth.listRuns(currentUser.uid, 8).then((runs) => {
+          // 방금 저장된 오늘 기록(몇 초 이내)은 "최근 기록"에서 제외하고 비교함
+          const now = Date.now();
+          const past = runs.filter((r) => {
+            const t = r.completedAt?.toDate ? r.completedAt.toDate().getTime() : 0;
+            return now - t > 120000 && r.paceMinPerKm > 0;
+          });
+          if (past.length < 2) {
+            $('finish-chart-c').innerHTML = '<p class="onboard-sub" style="padding:8px 0; font-size:12.5px;">비교할 만한 이전 기록이 아직 부족해요</p>';
+            return;
+          }
+          const pastPaces = past.map((r) => r.paceMinPerKm);
+          const pastAvg = pastPaces.reduce((a, b) => a + b, 0) / pastPaces.length;
+          const variance = pastPaces.reduce((a, b) => a + (b - pastAvg) ** 2, 0) / pastPaces.length;
+          const stdDev = Math.sqrt(variance);
+
+          const W = 320, H = 130, PADL = 34, PADR = 60, PADT = 14, PADB = 22;
+          const plotH = H - PADT - PADB;
+          const allVals = [avg, pastAvg - stdDev, pastAvg + stdDev];
+          const cMin = Math.min(...allVals) * 0.95;
+          const cMax = Math.max(...allVals) * 1.05;
+          const cRange = cMax - cMin || 1;
+          const yFor = (p) => PADT + (1 - (p - cMin) / cRange) * plotH;
+          const barW = 60;
+          const x1 = 70, x2 = 190;
+          const y1 = yFor(avg), y2 = yFor(pastAvg);
+          const errTop = yFor(pastAvg + stdDev), errBot = yFor(pastAvg - stdDev);
+          $('finish-chart-c').innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
+            <line x1="${PADL}" y1="${(PADT + plotH).toFixed(1)}" x2="${W - PADR}" y2="${(PADT + plotH).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+            <rect x="${x1 - barW / 2}" y="${y1.toFixed(1)}" width="${barW}" height="${(PADT + plotH - y1).toFixed(1)}" rx="4" fill="var(--amber)"/>
+            <text x="${x1}" y="${(y1 - 6).toFixed(1)}" font-size="10.5" fill="var(--paper)" text-anchor="middle" font-weight="700">${formatPace(avg)}</text>
+            <text x="${x1}" y="${H - 6}" font-size="9" fill="var(--mute)" text-anchor="middle">오늘</text>
+            <rect x="${x2 - barW / 2}" y="${y2.toFixed(1)}" width="${barW}" height="${(PADT + plotH - y2).toFixed(1)}" rx="4" fill="var(--go)"/>
+            <line x1="${x2}" y1="${errTop.toFixed(1)}" x2="${x2}" y2="${errBot.toFixed(1)}" stroke="var(--paper)" stroke-width="1.5"/>
+            <line x1="${x2 - 6}" y1="${errTop.toFixed(1)}" x2="${x2 + 6}" y2="${errTop.toFixed(1)}" stroke="var(--paper)" stroke-width="1.5"/>
+            <line x1="${x2 - 6}" y1="${errBot.toFixed(1)}" x2="${x2 + 6}" y2="${errBot.toFixed(1)}" stroke="var(--paper)" stroke-width="1.5"/>
+            <text x="${x2}" y="${(y2 - 6).toFixed(1)}" font-size="10.5" fill="var(--paper)" text-anchor="middle" font-weight="700">${formatPace(pastAvg)}</text>
+            <text x="${x2}" y="${H - 6}" font-size="9" fill="var(--mute)" text-anchor="middle">최근 ${past.length}회 평균</text>
+            <text x="${W - PADR + 4}" y="${PADT + 4}" font-size="8" fill="var(--mute)">n=${past.length}</text>
+          </svg>`;
+        }).catch(() => {
+          $('finish-chart-c').innerHTML = '<p class="onboard-sub" style="padding:8px 0; font-size:12.5px;">비교 데이터를 못 불러왔어요</p>';
+        });
+      } else {
+        $('finish-chart-c').innerHTML = '';
+      }
+
+      const rows = [];
+      if (maxP > avg * 1.1) {
+        const startKm = (worstIdx * 0.25).toFixed(2);
+        const endKm = ((worstIdx + 1) * 0.25).toFixed(2);
+        const diffSec = Math.round((maxP - avg) * 60);
+        rows.push(`<div class="row"><span class="dot" style="background:var(--amber)"></span><span class="text"><b>${startKm}~${endKm}km</b> 구간에서 가장 처졌어요 - 평균보다 <b>${diffSec}초/km</b> 느렸어요 (${formatPace(maxP)}/km)</span></div>`);
+      }
+      if (minP < avg * 0.9) {
+        const startKm = (bestIdx * 0.25).toFixed(2);
+        const endKm = ((bestIdx + 1) * 0.25).toFixed(2);
+        rows.push(`<div class="row"><span class="dot" style="background:#4FE3A0"></span><span class="text"><b>${startKm}~${endKm}km</b> 구간이 가장 빨랐어요 (${formatPace(minP)}/km)</span></div>`);
+      }
+      rows.push(`<div class="row"><span class="dot" style="background:var(--mute)"></span><span class="text">전체 평균 페이스는 <b>${formatPace(avg)}/km</b>였어요</span></div>`);
+      analysisContainer.innerHTML = rows.join('');
     }
 
     showScreen('screen-finish');
@@ -941,6 +1062,8 @@
   }
 
   function renderHomeHero() {
+    const face = localStorage.getItem(FACE_KEY);
+    $('home-avatar-img').src = face || '';
     const hour = new Date().getHours();
     const name = cachedProfile?.name ? `${cachedProfile.name}님, ` : '';
     let greeting = `${name}오늘도 좋은 하루예요`;
@@ -1182,10 +1305,14 @@
 
     // 새로고침 등으로 이미 로그인된 세션이 복원된 경우에만 처리
     // (로그인/가입 버튼으로 진행 중일 때는 위 핸들러들이 화면 전환을 직접 담당함)
+    // 앱이 맨 처음 뜨는 화면은 "인트로 영상"이라, 로그인 화면뿐 아니라 인트로 화면일 때도 확인해야 함
     Auth.onAuthChange(async (user) => {
       currentUser = user;
       if (!user || interactiveAuthInProgress) return;
-      if ($('screen-auth').classList.contains('active')) {
+      const onIntro = $('screen-intro').classList.contains('active');
+      const onAuth = $('screen-auth').classList.contains('active');
+      if (onIntro || onAuth) {
+        if (onIntro) $('intro-video').pause();
         cachedProfile = await Auth.getProfile(user.uid).catch(() => null);
         refreshGoalHeader();
         goToPostAuthFlow();
