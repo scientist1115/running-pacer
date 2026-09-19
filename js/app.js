@@ -517,7 +517,7 @@
       $('finish-pace').textContent = '-';
     }
 
-    // 오늘 뛴 경로 지도로 보여주기
+    // 오늘 뛴 경로 지도로 보여주기 - 시작/종료 마커 + 1km마다 거리 핀
     const container = $('finish-map');
     if (finishMapObj) { finishMapObj.remove(); finishMapObj = null; }
     container.innerHTML = '';
@@ -536,11 +536,27 @@
         finishMapObj.addLayer({
           id: 'finish-route-line', type: 'line', source: 'finish-route',
           layout: { 'line-cap': 'round', 'line-join': 'round' },
-          paint: { 'line-color': '#2BD97C', 'line-width': 4 },
+          paint: { 'line-color': '#2BD97C', 'line-width': 6 },
         });
+
+        // 시작(초록) / 종료(빨강) 점
+        new maplibregl.Marker({ color: '#2BD97C' }).setLngLat(coords[0]).addTo(finishMapObj);
+        new maplibregl.Marker({ color: '#FF6B5E' }).setLngLat(coords[coords.length - 1]).addTo(finishMapObj);
+
+        // 1km마다 거리 핀 (나이키 런 클럽처럼 "1 km" 알약 라벨)
+        const totalKm = Math.floor(km);
+        for (let i = 1; i <= totalKm; i++) {
+          const pt = pointsAlongRoute(route.points, [i * 1000])[0];
+          if (!pt) continue;
+          const el = document.createElement('div');
+          el.className = 'map-km-pill';
+          el.textContent = `${i} km`;
+          new maplibregl.Marker({ element: el }).setLngLat([pt.lng, pt.lat]).addTo(finishMapObj);
+        }
+
         finishMapObj.fitBounds(
           [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]],
-          { padding: 24, duration: 0 }
+          { padding: 28, duration: 0 }
         );
       });
     }
