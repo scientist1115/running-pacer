@@ -99,10 +99,11 @@ async function fetchOsmCrosswalks(minLat, maxLat, minLng, maxLng) {
     return (data.elements || []).map((el) => ({ lat: el.lat, lng: el.lon }));
   }
 
-  // overpass-api.de(공식 서버)가 최근 널리 보고된 406/429 오류를 자주 내고 있어서 대체 서버도 같이 시도함.
-  // 순서대로 하면 둘 다 실패할 때 시간이 두 배로 걸려서, 동시에 보내고 먼저 성공하는 쪽을 씀
+  // overpass-api.de(공식 서버)가 최근 널리 보고된 406/429 오류를 자주 내고 있어서 대체 서버들도 같이 시도함.
+  // 순서대로 하면 다 실패할 때 시간이 몇 배로 걸려서, 동시에 보내고 먼저 성공하는 쪽을 씀
   const results = await Promise.allSettled([
     tryEndpoint('https://overpass.private.coffee/api/interpreter'),
+    tryEndpoint('https://overpass.kumi.systems/api/interpreter'),
     tryEndpoint('https://overpass-api.de/api/interpreter'),
   ]);
   const success = results.find((r) => r.status === 'fulfilled');
