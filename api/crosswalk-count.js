@@ -89,7 +89,7 @@ async function countOsmCrosswalks(minLat, maxLat, minLng, maxLng) {
     method: 'POST',
     headers: { 'Content-Type': 'text/plain' },
     body: query,
-  }, 4000);
+  }, 7000);
   if (!overpassRes.ok) throw new Error('Overpass 응답 실패: ' + overpassRes.status);
   const data = await overpassRes.json();
   return (data.elements || []).length;
@@ -115,8 +115,10 @@ module.exports = async (req, res) => {
 
     const gov = govResult.status === 'fulfilled' ? govResult.value : null;
     const osm = osmResult.status === 'fulfilled' ? osmResult.value : null;
-    if (govResult.status === 'rejected') console.warn('정부 횡단보도 API 실패:', govResult.reason?.message);
-    if (osmResult.status === 'rejected') console.warn('OSM 횡단보도 조회 실패:', osmResult.reason?.message);
+    const govError = govResult.status === 'rejected' ? govResult.reason?.message : null;
+    const osmError = osmResult.status === 'rejected' ? osmResult.reason?.message : null;
+    if (govError) console.warn('정부 횡단보도 API 실패:', govError);
+    if (osmError) console.warn('OSM 횡단보도 조회 실패:', osmError);
 
     // 하나라도 성공했으면 "확인됨"으로 취급하고, 둘 중 더 많이 찾은 쪽 숫자를 씀
     // (지역에 따라 한쪽 데이터가 비어있을 수 있어서, 더 신뢰할 만한 쪽/더 찾은 쪽을 우선)
@@ -129,6 +131,7 @@ module.exports = async (req, res) => {
       count,
       ok,
       sources: { gov: gov ? govCount : null, osm: osm !== null ? osm : null },
+      errors: { gov: govError, osm: osmError },
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
