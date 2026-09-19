@@ -33,24 +33,47 @@ const RouteEngine = (() => {
     return res.json(); // [{name, lat, lng}, ...]
   }
 
-  // 경로 좌표 근처 횡단보도 개수 (전국횡단보도표준데이터 + OSM) - 실패와 "진짜 0개"를 구분해서 반환
+  // 지정한 범위(bbox) 안의 횡단보도 좌표 목록을 서버에서 가져옴 (정부+OSM 합쳐서)
+  async function fetchCrosswalkPointsInBox(minLat, maxLat, minLng, maxLng) {
+    const res = await fetchWithTimeout('/api/crosswalk-count', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ minLat, maxLat, minLng, maxLng }),
+    }, 9000);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) {
+      console.warn('횡단보도 계산 실패:', res.status, data.error, data.sources, data.errors);
+      return { points: [], ok: false };
+    }
+    const errText = data.errors?.gov || data.errors?.osm
+      ? ` (정부실패: ${data.errors?.gov || '없음'} / OSM실패: ${data.errors?.osm || '없음'})`
+      : '';
+    console.log(`[횡단보도 확인] 범위 안 ${data.points?.length || 0}개 (정부: ${data.sources?.gov} / OSM: ${data.sources?.osm})${errText}`);
+    return { points: data.points || [], ok: true };
+  }
+
+  // 특정 경로(points)의 좌표 범위(±0.002도, 대략 200m) 안에 들어오는 횡단보도 개수를 셈
+  function countPointsNearPath(crosswalkPoints, routePoints, pad = 0.002) {
+    const lats = routePoints.map((p) => p.lat), lngs = routePoints.map((p) => p.lng);
+    const minLat = Math.min(...lats) - pad, maxLat = Math.max(...lats) + pad;
+    const minLng = Math.min(...lngs) - pad, maxLng = Math.max(...lngs) + pad;
+    let n = 0;
+    for (const p of crosswalkPoints) {
+      if (p.lat >= minLat && p.lat <= maxLat && p.lng >= minLng && p.lng <= maxLng) n++;
+    }
+    return n;
+  }
+
+  // 경로 하나만 확인할 때 쓰는 간단 버전 (후보가 하나뿐인 직선 경로 등) - 실패와 "진짜 0개"를 구분해서 반환
   async function countCrosswalksNear(routePoints) {
     try {
-      const res = await fetchWithTimeout('/api/crosswalk-count', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ points: routePoints }),
-      }, 9000);
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.ok === false) {
-        console.warn('횡단보도 계산 실패:', res.status, data.error, data.sources);
-        return { count: 0, ok: false };
-      }
-      const errText = data.errors?.gov || data.errors?.osm
-        ? ` (정부실패: ${data.errors?.gov || '없음'} / OSM실패: ${data.errors?.osm || '없음'})`
-        : '';
-      console.log(`[횡단보도 확인] ${data.count}개 (정부: ${data.sources?.gov} / OSM: ${data.sources?.osm})${errText}`);
-      return { count: data.count || 0, ok: true };
+      const lats = routePoints.map((p) => p.lat), lngs = routePoints.map((p) => p.lng);
+      const { points, ok } = await fetchCrosswalkPointsInBox(
+        Math.min(...lats) - 0.002, Math.max(...lats) + 0.002,
+        Math.min(...lngs) - 0.002, Math.max(...lngs) + 0.002,
+      );
+      if (!ok) return { count: 0, ok: false };
+      return { count: countPointsNearPath(points, routePoints), ok: true };
     } catch (e) {
       console.warn('횡단보도 계산 실패:', e.message);
       return { count: 0, ok: false };
@@ -74,24 +97,33 @@ const RouteEngine = (() => {
   }
 
   // 후보 경로 여러 개 중 횡단보도+나쁜 노면이 가장 적은 순으로 점수 매겨 정렬해서 전부 반환
-  // (전부 병렬로 채점) - [0]이 가장 좋은 경로, 나머지는 "신호등 몇 개까지 괜찮아요?" 선택용 대안
+  // (전부 병렬로 채점) - [0]이 가장 좋은 경로, 나머지는 "신호등 몇 개까지 괜찮아요?" 선택용 대안.
+  // 횡단보도는 후보마다 따로 조회하지 않고, 전체 후보를 합친 범위로 한 번만 조회해서
+  // (그래야 무료 공개 Overpass 서버의 요청 제한에 안 걸림) 후보별 개수는 그 결과에서 로컬로 계산함
   async function pickBestRoute(candidates) {
-    const scored = await Promise.all(candidates.map(async (c) => {
-      const [crosswalks, badSurface] = await Promise.all([
-        countCrosswalksNear(c.points),
-        countBadSurfaceNear(c.points),
-      ]);
+    const allPoints = candidates.flatMap((c) => c.points);
+    const lats = allPoints.map((p) => p.lat), lngs = allPoints.map((p) => p.lng);
+    const [crosswalkResult, badSurfaceCounts] = await Promise.all([
+      fetchCrosswalkPointsInBox(
+        Math.min(...lats) - 0.003, Math.max(...lats) + 0.003,
+        Math.min(...lngs) - 0.003, Math.max(...lngs) + 0.003,
+      ),
+      Promise.all(candidates.map((c) => countBadSurfaceNear(c.points))),
+    ]);
+
+    const scored = candidates.map((c, i) => {
+      const crosswalkCount = crosswalkResult.ok ? countPointsNearPath(crosswalkResult.points, c.points) : 0;
       // 방향 추정(bearing) 기반 후보는 실제 검증된 장소가 아니라 임의로 잡은 지점이라,
       // 산길/외곽처럼 엉뚱한 곳으로 뻗을 수 있음. 공원 후보보다 약한 페널티를 줘서
       // 점수가 비슷하면 공원 쪽을 우선하도록 함 (그래도 크게 나으면 여전히 bearing 쪽이 이김)
       const sourcePenalty = c.source === 'bearing' ? 1 : 0;
       return {
         ...c,
-        crosswalkCount: crosswalks.count,
-        crosswalkDataOk: crosswalks.ok,
-        score: crosswalks.count * 2 + badSurface + sourcePenalty,
+        crosswalkCount,
+        crosswalkDataOk: crosswalkResult.ok,
+        score: crosswalkCount * 2 + badSurfaceCounts[i] + sourcePenalty,
       };
-    }));
+    });
     scored.sort((a, b) => a.score - b.score);
     return scored;
   }
