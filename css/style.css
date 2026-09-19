@@ -269,13 +269,18 @@ html, body {
   line-height: 1;
   margin: 2px 0 8px;
 }
+#hero-panel .hero-value .hero-unit { font-size: 20px; margin-left: 4px; opacity: 0.75; }
 #hero-panel .hero-sub-row {
   display: flex; justify-content: space-around; gap: 8px;
 }
 #hero-panel .hero-sub-item span {
   display: block; font-family: var(--font-display); font-size: 20px; line-height: 1;
 }
-#hero-panel .hero-sub-item label { font-size: 10px; font-weight: 700; opacity: 0.65; }
+#hero-panel .hero-sub-item label {
+  display: flex; align-items: center; justify-content: center; gap: 3px;
+  font-size: 10px; font-weight: 700; opacity: 0.65; margin-top: 2px;
+}
+#hero-panel .hero-sub-item label svg { width: 11px; height: 11px; flex-shrink: 0; }
 
 .profile-toggle-row {
   display: flex; align-items: center; justify-content: space-between; gap: 16px;
@@ -438,9 +443,18 @@ html, body {
 
 #youtube-player-box {
   position: absolute; bottom: 12px; left: 12px;
-  border-radius: 10px; overflow: hidden; opacity: 0.9; z-index: 500;
+  display: flex; align-items: flex-end; gap: 6px;
+  z-index: 500;
   transition: transform 0.2s;
 }
+#youtube-player { border-radius: 10px; overflow: hidden; opacity: 0.9; }
+#btn-next-song {
+  width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+  background: var(--surface-raised); border: 1px solid var(--line); color: var(--paper);
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 4px 10px -4px rgba(0, 0, 0, 0.6);
+}
+#btn-next-song svg { width: 15px; height: 15px; }
 /* AR 카메라 화면 위에서는 몰입감을 안 깨게 작게 줄임 */
 .ar-active #youtube-player-box { transform: scale(0.55); transform-origin: bottom left; opacity: 0.65; }
 

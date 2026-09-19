@@ -251,7 +251,12 @@
         <video id="ar-video" autoplay muted playsinline webkit-playsinline="true"></video>
         <canvas id="ar-canvas"></canvas>
       </div>
-      <div id="youtube-player-box"><div id="youtube-player"></div></div>
+      <div id="youtube-player-box">
+        <div id="youtube-player"></div>
+        <button id="btn-next-song" type="button" title="다음 곡">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="3" height="16"/></svg>
+        </button>
+      </div>
       <div id="turn-banner" class="hidden">
         <span id="turn-dist">-</span>
         <span id="turn-desc">-</span>
@@ -278,11 +283,20 @@
     </div>
     <div id="hero-panel">
       <div class="hero-label">페이스</div>
-      <div class="hero-value" id="stat-pace">-'--"</div>
+      <div class="hero-value"><span id="stat-pace">-'--"</span><span class="hero-unit">/km</span></div>
       <div class="hero-sub-row">
-        <div class="hero-sub-item"><span id="stat-elapsed">0:00</span><label>경과시간</label></div>
-        <div class="hero-sub-item"><span id="stat-distance">-</span><label>남은거리</label></div>
-        <div class="hero-sub-item"><span id="stat-eta">-</span><label>도착예정</label></div>
+        <div class="hero-sub-item">
+          <span id="stat-elapsed">0:00</span>
+          <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>경과시간</label>
+        </div>
+        <div class="hero-sub-item">
+          <span id="stat-distance">-</span>
+          <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>남은거리</label>
+        </div>
+        <div class="hero-sub-item">
+          <span id="stat-eta">-</span>
+          <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 8 12 12 14.5 13.5"/><path d="M9 3h6"/></svg>도착까지</label>
+        </div>
       </div>
     </div>
     <button id="btn-end-run" class="btn-secondary" style="margin: 10px 16px 16px;">

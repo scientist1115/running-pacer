@@ -247,14 +247,20 @@
       if (heading === null) return;
       compassHeading = heading;
 
-      // 멈춰 서 있을 때는 위치 이동 없이 방향만 바로 반영 (몸을 돌리면 화면도 즉시 도는 VR 느낌)
+      const now = Date.now();
+      if (now - lastCompassApply < 100) return; // 너무 잦은 갱신은 성능상 스킵
+      lastCompassApply = now;
+      currentBearing = heading;
+
+      // 멈춰 서 있을 때는 위치 이동 없이 방향만 바로 반영 (몸을 돌리면 지도도 즉시 도는 느낌)
       if (!lastKnownIsMoving && mapHelper) {
-        const now = Date.now();
-        if (now - lastCompassApply > 100) {
-          lastCompassApply = now;
-          currentBearing = heading;
-          mapHelper.map.setBearing(heading);
-        }
+        mapHelper.map.setBearing(heading);
+      }
+      // AR 모드면 GPS 갱신을 기다리지 않고 방향이 바뀔 때마다 바로 다시 그림 -
+      // 안 그러면 제자리에서 몸만 돌렸을 때 다음 GPS 신호가 올 때까지 화살표가 그대로 있게 됨
+      if (arModeEnabled && lastPos) {
+        if (arUsingXr) ArXR.updatePath(getLookaheadPathPoints());
+        else updateArOverlay(lastPos, heading);
       }
     };
     window.addEventListener('deviceorientationabsolute', handler, true);
@@ -418,11 +424,13 @@
     const accuracy = pos.coords.accuracy || 999; // 미터 단위 오차 반경
     const speed = pos.coords.speed || 0; // m/s
 
-    // 위치 정확도가 너무 나쁘면(와이파이 기반 대략 위치 등) 이번 값은 신뢰하지 않고 건너뜀
-    if (accuracy > 30) return;
+    // 위치 정확도가 아주 나쁘면(100m 넘으면, 거의 못 쓰는 수준) 이번 값은 건너뜀.
+    // 30m 기준은 고층건물 많은 지역(예: 과천지식정보타운)에서 대부분의 위치가 버려져서
+    // 거리가 거의 안 잡히는 문제가 있었음 - 100m로 완화하고, 대신 noiseFloor로 흔들림을 거름
+    if (accuracy > 100) return;
 
     const movedMeters = lastPos ? haversine(lastPos, cur) : 0;
-    const noiseFloor = Math.max(3, accuracy); // GPS 오차 범위 안의 흔들림은 "이동"으로 안 침
+    const noiseFloor = Math.max(5, accuracy * 0.8); // 정확도가 나쁠수록 더 크게 움직여야 "진짜 이동"으로 침
     const isRealMovement = lastPos ? movedMeters > noiseFloor : false;
     const isMoving = speed > 0.3 || isRealMovement;
 
@@ -1365,6 +1373,10 @@
     });
 
     $('mic-btn').addEventListener('click', () => Voice.listenOnce(handleRunVoice));
+    $('btn-next-song').addEventListener('click', async () => {
+      const name = await Music.playNext();
+      if (name) announce(`다음 곡, ${name}`);
+    });
     $('btn-end-run').addEventListener('click', () => {
       if (goalCountedForThisRun) return; // 이미 도착 처리로 종료 중이면 중복 방지
       goalCountedForThisRun = true;

@@ -168,8 +168,18 @@ const Music = (() => {
     isMovingFast = nowMoving;
   }
 
+  // 다음 곡으로 넘어감 (버튼으로 곡 바꾸기용 - 달리면서 음성인식이 잘 안 될 때를 위함)
+  async function playNext() {
+    const tracks = await listTracks();
+    if (tracks.length === 0) return null;
+    const idx = tracks.findIndex((t) => t.id === currentTrackId);
+    const next = tracks[(idx + 1) % tracks.length];
+    await playTrackById(next.id);
+    return next.name;
+  }
+
   return {
     openDB, addTrack, addYoutubeTrack, addSpotifyTrack, listTracks, playTrackById,
-    playByVoiceQuery, pause, resume, isPlaying, startForRun, onSpeedUpdate,
+    playByVoiceQuery, playNext, pause, resume, isPlaying, startForRun, onSpeedUpdate,
   };
 })();

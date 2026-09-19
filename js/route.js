@@ -78,11 +78,15 @@ const RouteEngine = (() => {
         countCrosswalksNear(c.points),
         countBadSurfaceNear(c.points),
       ]);
+      // 방향 추정(bearing) 기반 후보는 실제 검증된 장소가 아니라 임의로 잡은 지점이라,
+      // 산길/외곽처럼 엉뚱한 곳으로 뻗을 수 있음. 공원 후보보다 약한 페널티를 줘서
+      // 점수가 비슷하면 공원 쪽을 우선하도록 함 (그래도 크게 나으면 여전히 bearing 쪽이 이김)
+      const sourcePenalty = c.source === 'bearing' ? 1 : 0;
       return {
         ...c,
         crosswalkCount: crosswalks.count,
         crosswalkDataOk: crosswalks.ok,
-        score: crosswalks.count * 2 + badSurface,
+        score: crosswalks.count * 2 + badSurface + sourcePenalty,
       };
     }));
     scored.sort((a, b) => a.score - b.score);
@@ -131,14 +135,14 @@ const RouteEngine = (() => {
   // 문제가 있어서, 방향 기반 가상 지점을 같이 써서 항상 목표거리에 가까운 후보를 확보함.
   async function buildLoopRoute(start, targetKm) {
     const parks = await searchNearby('공원', start).catch(() => []);
-    const parkTurnarounds = parks.slice(0, 3).map((p) => ({ lat: p.lat, lng: p.lng, name: p.name }));
+    const parkTurnarounds = parks.slice(0, 3).map((p) => ({ lat: p.lat, lng: p.lng, name: p.name, source: 'park' }));
 
     const halfMeters = (targetKm * 1000) / 2;
     // 실제 도로를 따라 걷는 거리는 직선거리보다 보통 20~40% 정도 더 길게 나와서(길이 꺾이고 휘어있으니까),
     // 직선거리로 그대로 반환점을 잡으면 왕복 거리가 목표보다 계속 길게 나옴. 0.72를 곱해서 보정.
     const bearingTurnarounds = [0, 60, 120, 180, 240, 300].map((bearing, i) => {
       const pt = destinationPoint(start, bearing, halfMeters * 0.72);
-      return { lat: pt.lat, lng: pt.lng, name: `${targetKm}km 코스 ${i + 1}` };
+      return { lat: pt.lat, lng: pt.lng, name: `${targetKm}km 코스 ${i + 1}`, source: 'bearing' };
     });
 
     const allTurnarounds = [...parkTurnarounds, ...bearingTurnarounds];
@@ -153,6 +157,7 @@ const RouteEngine = (() => {
           distanceMeters: out.distanceMeters * 2,
           turns: out.turns || [], // 복귀 구간은 반대 방향이라 회전 안내는 갈 때 것만 사용
           via: turnaround.name,
+          source: turnaround.source,
         };
       } catch {
         return null;

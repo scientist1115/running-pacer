@@ -49,7 +49,10 @@ const Voice = (() => {
     window.speechSynthesis.speak(utter);
   }
 
+  let speakToken = 0; // speak()가 겹쳐 호출될 때, 오래된 응답이 늦게 와서 새 응답 위에 덮어써지는 걸 막는 용도
+
   async function speak(text, { interrupt = true } = {}) {
+    const myToken = ++speakToken;
     const finalText = comedyMode ? comedify(text) : text;
 
     if (selectedVoiceKey) {
@@ -63,7 +66,9 @@ const Voice = (() => {
         });
         if (!res.ok) throw new Error('TTS 요청 실패');
         const blob = await res.blob();
+        if (myToken !== speakToken) return; // 기다리는 동안 더 최신 speak()가 있었으면 이 오래된 응답은 버림
         const url = URL.createObjectURL(blob);
+        if (currentAudio) currentAudio.pause();
         currentAudio = new Audio(url);
         currentAudio.play();
         return;
@@ -73,6 +78,7 @@ const Voice = (() => {
       }
     }
 
+    if (myToken !== speakToken) return; // 이것도 마찬가지로 오래된 호출이면 버림
     if (interrupt) window.speechSynthesis.cancel();
     speakBrowser(finalText);
   }
