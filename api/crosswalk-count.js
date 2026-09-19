@@ -85,14 +85,28 @@ async function countGovCrosswalks(points, minLat, maxLat, minLng, maxLng) {
 async function countOsmCrosswalks(minLat, maxLat, minLng, maxLng) {
   // highway=crossing: OSM에서 보행자 횡단 지점(신호등 유무 상관없이)에 붙이는 표준 태그
   const query = `[out:json][timeout:15];node["highway"="crossing"](${minLat},${minLng},${maxLat},${maxLng});out tags;`;
-  const overpassRes = await fetchWithTimeout('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    headers: { 'Content-Type': 'text/plain' },
-    body: query,
-  }, 7000);
-  if (!overpassRes.ok) throw new Error('Overpass 응답 실패: ' + overpassRes.status);
-  const data = await overpassRes.json();
-  return (data.elements || []).length;
+
+  async function tryEndpoint(url) {
+    const overpassRes = await fetchWithTimeout(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain' },
+      body: query,
+    }, 6000);
+    if (!overpassRes.ok) throw new Error(`Overpass 응답 실패(${url}): ${overpassRes.status}`);
+    const data = await overpassRes.json();
+    return (data.elements || []).length;
+  }
+
+  // overpass-api.de(공식 서버)가 최근 널리 보고된 406 오류를 내고 있어서(2026년 상반기부터,
+  // 다른 여러 개발자들도 같은 문제를 겪는 중) 대체 서버도 같이 시도함.
+  // 순서대로 하면 둘 다 실패할 때 시간이 두 배로 걸려서, 동시에 보내고 먼저 성공하는 쪽을 씀
+  const results = await Promise.allSettled([
+    tryEndpoint('https://overpass.private.coffee/api/interpreter'),
+    tryEndpoint('https://overpass-api.de/api/interpreter'),
+  ]);
+  const success = results.find((r) => r.status === 'fulfilled');
+  if (success) return success.value;
+  throw results[0].reason || new Error('Overpass 서버들에 모두 접속하지 못했어요');
 }
 
 module.exports = async (req, res) => {
