@@ -165,7 +165,7 @@
     </div>
   </section>
 
-  <!-- 1-2. 아이템 창: 누적 거리로 해금 / 부위별 등급 진화 -->
+  <!-- 1-2. 아이템 창: 고급 아이템(5·7km 코스 완주) / 기본 아이템(누적 거리 해금) / 걷는 캐릭터 -->
   <section id="screen-items" class="screen">
     <div class="setup-header-row">
       <button id="btn-items-back" class="btn-icon" type="button" title="홈으로">
@@ -175,6 +175,7 @@
       <span style="width:40px;"></span>
     </div>
     <div class="section-card" id="items-hero" style="margin-top:16px;"></div>
+    <div id="items-premium"></div>
     <div id="items-filter-chips" class="crosswalk-selector-chips" style="margin-bottom:8px;"></div>
     <div id="items-tier-legend" class="tier-legend"></div>
     <div id="items-slot-list"></div>
@@ -293,6 +294,7 @@
           <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="3" height="16"/></svg>
         </button>
       </div>
+      <div id="premium-run-banner" class="hidden"></div>
       <div id="turn-banner" class="hidden">
         <span id="turn-dist">-</span>
         <span id="turn-desc">-</span>
