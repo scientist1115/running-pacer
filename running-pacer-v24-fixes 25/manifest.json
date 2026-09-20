@@ -1,0 +1,14 @@
+{
+  "name": "런페이서",
+  "short_name": "런페이서",
+  "description": "횡단보도 없이, 좋은 길로만 달리는 러닝 내비게이션",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#10151A",
+  "theme_color": "#10151A",
+  "orientation": "portrait",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
