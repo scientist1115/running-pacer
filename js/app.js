@@ -5,6 +5,61 @@
   const VOICE_KEY = 'run-pacer-voice-key';
   const ARROW_MODE_KEY = 'run-pacer-arrow-mode'; // 'map' | 'ar'
   const NICKNAME_KEY = 'run-pacer-leaderboard-nickname';
+  const ITEMS_KEY = 'run-pacer-items'; // localStorage: 보유한 아이템 id 배열(획득 순서 유지)
+  let lastItemMilestone = 0; // 이번 러닝에서 마지막으로 아이템을 받은 거리(m)
+  let itemPopupTimer = null;
+
+  // 3km마다 러닝 중에 랜덤으로 하나씩 얻는 아이템 10종 - 슬롯별로 캐릭터에 장착돼서 보여짐
+  const ITEM_CATALOG = [
+    { id: 'headband', name: '머리띠', slot: 'head', color: '#FF6B5E' },
+    { id: 'cap', name: '모자', slot: 'head', color: '#4FD8FF' },
+    { id: 'sunglasses', name: '선글라스', slot: 'head', color: '#2C2C2C' },
+    { id: 'waterbottle', name: '물병', slot: 'hand', color: '#4FA8FF' },
+    { id: 'energydrink', name: '에너지드링크', slot: 'hand', color: '#FFB238' },
+    { id: 'kneepads', name: '무릎보호대', slot: 'legs', color: '#8B5CF6' },
+    { id: 'armsleeve', name: '팔토시', slot: 'arms', color: '#38E1FF' },
+    { id: 'scarf', name: '목도리', slot: 'neck', color: '#FF9FB2' },
+    { id: 'wristband', name: '손목밴드', slot: 'wrist', color: '#FFD60A' },
+    { id: 'vest', name: '조끼', slot: 'torso', color: '#2BD97C' },
+  ];
+
+  function getOwnedItemIds() {
+    try { return JSON.parse(localStorage.getItem(ITEMS_KEY) || '[]'); } catch { return []; }
+  }
+
+  // 슬롯별로 가장 최근에 얻은 아이템 하나만 "장착"된 걸로 취급 (같은 부위 여러 개면 최신 것만 보임)
+  function getEquippedItems() {
+    const owned = getOwnedItemIds();
+    const equipped = {};
+    owned.forEach((id) => {
+      const item = ITEM_CATALOG.find((i) => i.id === id);
+      if (item) equipped[item.slot] = item;
+    });
+    return equipped;
+  }
+
+  function showItemPopup(text) {
+    const el = $('item-popup');
+    if (!el) return;
+    el.textContent = text;
+    el.classList.add('show');
+    clearTimeout(itemPopupTimer);
+    itemPopupTimer = setTimeout(() => el.classList.remove('show'), 3000);
+  }
+
+  // 3km 지점마다 호출됨 - 랜덤 아이템 하나를 주고, 이미 있으면 그렇다고 알려줌
+  function awardRandomItem() {
+    const item = ITEM_CATALOG[Math.floor(Math.random() * ITEM_CATALOG.length)];
+    const owned = getOwnedItemIds();
+    const already = owned.includes(item.id);
+    if (!already) {
+      owned.push(item.id);
+      localStorage.setItem(ITEMS_KEY, JSON.stringify(owned));
+    }
+    showItemPopup(already ? `🎁 ${item.name} (이미 보유)` : `🎁 아이템 획득: ${item.name}!`);
+    announce(already ? `${item.name}를 또 발견했어요` : `아이템을 획득했어요! ${item.name}`);
+  }
+
   const NICK_ADJ = ['번개', '질풍', '폭풍', '무적', '씩씩한', '날쌘', '용감한', '유쾌한', '신비한', '화끈한', '조용한', '엉뚱한'];
   const NICK_NOUN = ['치타', '표범', '여우', '독수리', '다람쥐', '늑대', '호랑이', '사자', '토끼', '매', '거북이', '두더지'];
   function generateRandomNickname() {
@@ -226,6 +281,7 @@
         paceSplits = [];
         lastSplitMeters = 0;
         lastSplitTime = Date.now();
+        lastItemMilestone = 0;
         announce('출발할게요.');
         Music.startForRun();
         startGpsTracking();
@@ -453,6 +509,10 @@
     const isMoving = speed > 0.3 || isRealMovement;
 
     if (isRealMovement) traveledMeters += movedMeters;
+    if (traveledMeters - lastItemMilestone >= 3000) {
+      lastItemMilestone = Math.floor(traveledMeters / 3000) * 3000;
+      awardRandomItem();
+    }
 
     // 방향: 나침반이 있으면 그걸 최우선으로(제일 반응이 빠름), 없으면 기기 heading,
     // 그것도 없으면 직전 위치 대비 이동 방향으로 계산
@@ -1000,6 +1060,7 @@
 
     const elapsedMin = (Date.now() - startedAt) / 60000;
     const traveledKm = traveledMeters / 1000;
+    $('stat-covered').textContent = traveledKm.toFixed(1) + 'km';
     const paceMinPerKm = traveledKm > 0.05 ? elapsedMin / traveledKm : 0;
     if (paceMinPerKm > 0) {
       const min = Math.floor(paceMinPerKm);
@@ -1154,12 +1215,40 @@
     if (!box) return;
     const distanceKm = cachedProfile?.distanceRunKm || 0;
     const level = getCharacterLevel(distanceKm);
+    const nextLevel = CHAR_LEVELS[level.idx + 1];
     const muscle = 1 + level.idx * 0.18;   // 레벨이 올라갈수록 팔다리가 굵어짐(근육)
     const heightScale = 1 + level.idx * 0.05; // 레벨이 올라갈수록 키가 살짝 커짐
     const legW = (10 * muscle).toFixed(1);
     const armW = (7 * muscle).toFixed(1);
     const torsoW = (32 * muscle).toFixed(1);
     const quote = level.quotes[Math.floor(Math.random() * level.quotes.length)];
+
+    let progressHtml;
+    if (nextLevel) {
+      const span = nextLevel.min - level.min;
+      const pct = Math.min(Math.round(((distanceKm - level.min) / span) * 100), 100);
+      const remain = Math.max(nextLevel.min - distanceKm, 0);
+      progressHtml = `
+        <div class="runner-progress-row">
+          <div class="goal-bar-track"><div class="goal-bar-fill" style="width:${pct}%;"></div></div>
+          <span class="runner-progress-text">${nextLevel.name}까지 ${remain.toFixed(1)}km</span>
+        </div>`;
+    } else {
+      progressHtml = `<div class="runner-progress-text" style="margin-top:8px;">누적 ${distanceKm.toFixed(1)}km · 최고 단계예요!</div>`;
+    }
+
+    // 3km마다 얻은 아이템 중 부위별로 가장 최근 것만 캐릭터에 장착해서 보여줌
+    const equipped = getEquippedItems();
+    let accessorySvg = '';
+    if (equipped.torso) accessorySvg += `<rect x="${(100 - torsoW / 2).toFixed(1)}" y="78" width="${torsoW}" height="10" fill="${equipped.torso.color}" opacity="0.9"/>`;
+    if (equipped.arms) accessorySvg += `<rect x="${(100 - armW / 2 - 2).toFixed(1)}" y="70" width="${(Number(armW) + 4).toFixed(1)}" height="18" rx="4" fill="${equipped.arms.color}" opacity="0.85"/>`;
+    if (equipped.neck) accessorySvg += `<rect x="88" y="57" width="24" height="6" rx="3" fill="${equipped.neck.color}"/>`;
+    if (equipped.head) accessorySvg += `<rect x="82" y="27" width="36" height="7" rx="3.5" fill="${equipped.head.color}"/>`;
+    if (equipped.hand) accessorySvg += `<rect x="66" y="88" width="9" height="15" rx="3" fill="${equipped.hand.color}"/>`;
+    if (equipped.wrist) accessorySvg += `<circle cx="70" cy="105" r="5" fill="${equipped.wrist.color}"/>`;
+    if (equipped.legs) accessorySvg += `<rect x="${(100 - legW / 2 - 2).toFixed(1)}" y="140" width="${(Number(legW) + 4).toFixed(1)}" height="9" rx="4" fill="${equipped.legs.color}"/>`;
+
+    const ownedCount = getOwnedItemIds().length;
 
     box.innerHTML = `
       <svg viewBox="0 0 200 200" width="110" height="110" style="transform: scaleY(${heightScale}); transform-origin: bottom center;">
@@ -1178,10 +1267,13 @@
             <rect x="${(100 - armW / 2).toFixed(1)}" y="68" width="${armW}" height="45" rx="${armW / 2}" fill="#F4C6A0"/>
           </g>
           <circle cx="100" cy="42" r="20" fill="#F4C6A0"/>
+          ${accessorySvg}
         </g>
       </svg>
       <div class="runner-level-name">${level.name}</div>
+      ${progressHtml}
       <div class="runner-quote">${quote}</div>
+      <div class="runner-items-count">보유 아이템 ${ownedCount}/${ITEM_CATALOG.length}</div>
     `;
   }
 
