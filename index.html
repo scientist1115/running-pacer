@@ -98,6 +98,9 @@
           <img id="home-avatar-img" src="" alt="" />
           <svg id="home-avatar-fallback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
         </button>
+        <button id="btn-home-items" class="btn-icon" type="button" title="아이템 창">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h12l1.5 12.5a1 1 0 0 1-1 1.1h-13a1 1 0 0 1-1-1.1z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>
+        </button>
         <button id="btn-logout" class="btn-icon" type="button" title="로그아웃">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
         </button>
@@ -110,6 +113,11 @@
       <div class="home-goal-bar-row">
         <div class="goal-bar-track"><div class="goal-bar-fill" id="home-goal-bar" style="width:0%;"></div></div>
         <div class="home-goal-pct" id="home-goal-pct"></div>
+      </div>
+      <div class="home-pace-row" id="home-pace-row">
+        <div class="home-pace-item"><span id="home-pace-avg">-'--"</span><label>평균 페이스</label></div>
+        <div class="home-pace-item"><span><i id="home-pace-last">-'--"</i><em id="home-pace-delta"></em></span><label>최근 러닝</label></div>
+        <div class="home-pace-item"><span id="home-pace-best">-'--"</span><label>최고 페이스</label></div>
       </div>
     </div>
 
@@ -144,7 +152,8 @@
         <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
         최근 페이스
       </div>
-      <div id="pace-chart" style="width:100%; height:90px;"></div>
+      <div id="pace-chart" style="width:100%;"></div>
+      <div id="pace-chart-detail" class="pace-detail"></div>
     </div>
 
     <div class="section-card">
@@ -154,6 +163,21 @@
       </div>
       <div id="run-history-list"></div>
     </div>
+  </section>
+
+  <!-- 1-2. 아이템 창: 누적 거리로 해금 / 부위별 등급 진화 -->
+  <section id="screen-items" class="screen">
+    <div class="setup-header-row">
+      <button id="btn-items-back" class="btn-icon" type="button" title="홈으로">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      </button>
+      <p class="onboard-title" style="margin:0; font-size:24px;">아이템 창</p>
+      <span style="width:40px;"></span>
+    </div>
+    <div class="section-card" id="items-hero" style="margin-top:16px;"></div>
+    <div id="items-filter-chips" class="crosswalk-selector-chips" style="margin-bottom:8px;"></div>
+    <div id="items-tier-legend" class="tier-legend"></div>
+    <div id="items-slot-list"></div>
   </section>
 
   <!-- 2. 목적지/거리 설정 -->
@@ -273,7 +297,6 @@
         <span id="turn-dist">-</span>
         <span id="turn-desc">-</span>
       </div>
-      <div id="item-popup"></div>
       <div id="crosswalk-selector" class="hidden">
         <div class="crosswalk-selector-label">신호등이 불편하면 골라보세요</div>
         <div id="crosswalk-selector-chips" class="crosswalk-selector-chips"></div>
@@ -339,14 +362,16 @@
       <div id="finish-map" style="width:100%; height:170px; background:var(--surface-raised);"></div>
     </div>
 
+    <div class="section-card hidden" id="finish-new-items"></div>
+
     <div class="section-card">
       <div class="section-card-head">
         <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
         구간별 페이스 분석
       </div>
       <div class="finish-panel">
-        <div class="finish-panel-label">A · 거리별 페이스</div>
-        <div id="finish-chart-a" class="finish-panel-chart" style="height:120px;"></div>
+        <div class="finish-panel-label">A · 거리별 페이스 (번호는 아래 분석과 연결돼요)</div>
+        <div id="finish-chart-a" class="finish-panel-chart"></div>
       </div>
       <div class="finish-panel">
         <div class="finish-panel-label">B · 페이스 분포</div>
@@ -356,7 +381,8 @@
         <div class="finish-panel-label">C · 최근 기록과 비교</div>
         <div id="finish-chart-c" class="finish-panel-chart" style="height:130px;"></div>
       </div>
-      <div id="finish-pace-analysis"></div>
+      <div class="finish-panel-label" style="margin-top:6px;">이번 러닝 분석</div>
+      <div id="finish-pace-analysis" class="finish-pace-analysis" style="margin-top:6px;"></div>
     </div>
 
     <button id="btn-finish-home" class="btn-primary" style="margin-top: 10px;">홈으로</button>
