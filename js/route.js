@@ -273,6 +273,8 @@ const RouteEngine = (() => {
       type: 'Feature',
       geometry: { type: 'LineString', coordinates: points.map((p) => [p.lng, p.lat]) },
     };
+    let routeReady = false;   // 지도 레이어가 다 만들어졌는지
+    let pendingProgress = null; // 지도가 준비되기 전에 들어온 진행 갱신 요청
 
     map.on('load', () => {
       // 라벨 레이어 바로 아래에 3D 건물을 끼워 넣음 (건물이 글자를 안 가리게)
@@ -303,6 +305,15 @@ const RouteEngine = (() => {
       }, labelLayerId);
 
       map.addSource('run-pacer-route', { type: 'geojson', data: routeGeoJson });
+      // 이미 지나온 구간은 흐린 회색 선으로 (남은 길만 초록색으로 보이게)
+      map.addSource('run-pacer-route-done', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] } } });
+      map.addLayer({
+        id: 'run-pacer-route-done-line',
+        type: 'line',
+        source: 'run-pacer-route-done',
+        layout: { 'line-cap': 'round', 'line-join': 'round' },
+        paint: { 'line-color': '#8B98A3', 'line-width': 6, 'line-opacity': 0.35 },
+      });
       // 은은한 네온 느낌을 위해 흐릿하고 굵은 "발광" 선을 먼저 깔고, 그 위에 선명한 선을 얹음
       map.addLayer({
         id: 'run-pacer-route-glow',
@@ -333,6 +344,11 @@ const RouteEngine = (() => {
         source: 'run-pacer-chevrons',
         paint: { 'fill-color': '#FFB238', 'fill-opacity': 0.95 },
       });
+      routeReady = true;
+      if (pendingProgress) {
+        applyRouteProgress(pendingProgress.t, pendingProgress.cur);
+        pendingProgress = null;
+      }
     });
 
     // 누적 거리 기반으로 0~1 진행률을 실제 좌표로 보간
@@ -401,7 +417,59 @@ const RouteEngine = (() => {
       mapInstance.getSource('run-pacer-chevrons').setData({ type: 'FeatureCollection', features });
     }
 
-    return { map, pointAtProgress, initialBearing, updateChevrons };
+    // 진행률 t(0~1)에 맞춰 "남은 경로"만 초록 선으로 남기고, 지나온 구간은 흐리게 바꿈.
+    // cur를 주면(경로에서 벗어난 경우) 내 실제 위치에서 경로로 돌아오는 안내선이 남은 경로 앞에 붙음
+    function applyRouteProgress(t, cur) {
+      const routeSrc = map.getSource('run-pacer-route');
+      const doneSrc = map.getSource('run-pacer-route-done');
+      if (!routeSrc || !doneSrc) return;
+      const d0 = total * Math.min(Math.max(t, 0), 1);
+      let i = 1;
+      while (i < cumDist.length && cumDist[i] <= d0) i++;
+      const head = distToCoord(d0).point;
+      const remaining = [[head.lng, head.lat]].concat(points.slice(i).map((p) => [p.lng, p.lat]));
+      const done = points.slice(0, i).map((p) => [p.lng, p.lat]).concat([[head.lng, head.lat]]);
+      if (cur) remaining.unshift([cur.lng, cur.lat]);
+      if (remaining.length < 2) remaining.push(remaining[0]); // 도착 직전에도 유효한 선 유지
+      routeSrc.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: remaining } });
+      doneSrc.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: done.length >= 2 ? done : [] } });
+    }
+
+    function updateRoute(t, cur) {
+      if (!routeReady) { pendingProgress = { t, cur }; return; }
+      applyRouteProgress(t, cur);
+    }
+
+    // 내 실제 GPS 위치(cur)가 경로의 어디쯤인지 찾음 - 경로 위 fromM~toM(미터) 구간 안에서만 찾아서
+    // 갔다가 돌아오는 코스처럼 경로가 겹치는 곳에서 엉뚱한 쪽으로 붙는 걸 막음.
+    // 반환: { along: 경로 시작부터의 거리(m), dist: 경로까지 수직 거리(m), point: 경로 위 가장 가까운 점 }
+    function snapToRoute(cur, fromM, toM) {
+      const mx = 111320 * Math.cos((cur.lat * Math.PI) / 180);
+      const my = 110540;
+      let best = null;
+      for (let i = 1; i < points.length; i++) {
+        if (cumDist[i] < fromM) continue;
+        if (cumDist[i - 1] > toM) break;
+        const a = points[i - 1];
+        const b = points[i];
+        const ax = (a.lng - cur.lng) * mx;
+        const ay = (a.lat - cur.lat) * my;
+        const dx = (b.lng - a.lng) * mx;
+        const dy = (b.lat - a.lat) * my;
+        const len2 = dx * dx + dy * dy;
+        const s = len2 > 0 ? Math.min(Math.max(-(ax * dx + ay * dy) / len2, 0), 1) : 0;
+        const px = ax + s * dx;
+        const py = ay + s * dy;
+        const dist = Math.sqrt(px * px + py * py);
+        const along = cumDist[i - 1] + s * (cumDist[i] - cumDist[i - 1]);
+        if (!best || dist < best.dist - 0.5 || (Math.abs(dist - best.dist) <= 0.5 && along < best.along)) {
+          best = { dist, along, point: { lat: cur.lat + py / my, lng: cur.lng + px / mx } };
+        }
+      }
+      return best;
+    }
+
+    return { map, pointAtProgress, initialBearing, updateChevrons, updateRoute, snapToRoute, totalMeters: total };
   }
 
   return {
