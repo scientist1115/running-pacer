@@ -7,6 +7,7 @@
   const NICKNAME_KEY = 'run-pacer-leaderboard-nickname';
   let analysisToken = 0;      // 러닝 분석(장소 조회) 비동기 결과가 오래된 화면을 덮어쓰지 않게 하는 토큰
   let itemsFilter = 'all';    // 아이템 창 필터: 'all' | '3' | '5'
+  let premiumRun = null;      // 고급 아이템 도전 중이면 { id, name, km, routeKm } - 완주하면 아이템 지급
 
   /* ================= 아이템 시스템 (누적 거리로 해금, 부위별로 진화) =================
    * - 러닝 중에는 아이템을 주지 않아요. 누적 러닝 거리(Firestore distanceRunKm)가 쌓이면 순서대로 해금돼요.
@@ -61,6 +62,109 @@
   })();
   const TOTAL_ITEM_KM = ITEM_CATALOG[ITEM_CATALOG.length - 1].unlockKm;
 
+  /* ================= 고급 아이템 (5km / 7km 코스 완주로 획득) =================
+   * - 아이템 창에서 코스를 고르면 내 주변에 그 거리만큼의 순환 경로를 만들어서 바로 러닝을 준비해요.
+   * - 끝까지 완주하면(수동 종료는 목표의 98% 이상) 그 아이템을 얻어요. 기본 아이템(누적 거리 해금)과는 별개예요.
+   * - 고급 아이템은 등급이 5(신화)/6(초월)이라 같은 부위의 기본 아이템보다 항상 우선해서 장착돼요.
+   * - 보유 목록은 Firestore users/{uid}.premiumItems(배열)에 저장하고, 실패에 대비해 기기(localStorage)에도 같이 둬요.
+   */
+  TIER_INFO[5] = { name: '신화', color: '#FF5CCB' };
+  TIER_INFO[6] = { name: '초월', color: '#38F2FF' };
+  SLOT_INFO.halo = '후광'; SLOT_INFO.back = '등'; SLOT_INFO.aura = '오라';
+  const PREMIUM_ITEMS = [
+    { id: 'p_halo', name: '천사의 링', slot: 'halo', tier: 5, runKm: 5, color: '#FFE98A', desc: '머리 위에 떠 있는 빛의 고리' },
+    { id: 'p_holovisor', name: '홀로 바이저', slot: 'face', tier: 5, runKm: 5, color: '#00E5FF', desc: '앞길을 스캔하는 홀로그램 바이저' },
+    { id: 'p_lightboots', name: '번개 부츠', slot: 'feet', tier: 5, runKm: 5, color: '#FFE066', desc: '한 걸음마다 번개가 튀는 부츠' },
+    { id: 'p_wings', name: '은빛 날개', slot: 'back', tier: 5, runKm: 5, color: '#EAF2FF', desc: '등 뒤에서 펄럭이는 날개' },
+    { id: 'p_nebula', name: '성운 왕관', slot: 'halo', tier: 6, runKm: 7, color: '#7C5CFF', desc: '천사의 링보다 한 단계 위, 우주의 왕관' },
+    { id: 'p_cybersuit', name: '사이버 슈트', slot: 'torso', tier: 6, runKm: 7, color: '#38F2FF', desc: '에너지 코어가 빛나는 슈트' },
+    { id: 'p_baton', name: '플라즈마 배턴', slot: 'hand', tier: 6, runKm: 7, color: '#C58BFF', desc: '손에 쥔 빛의 배턴' },
+    { id: 'p_flameaura', name: '불꽃 오라', slot: 'aura', tier: 6, runKm: 7, color: '#FF7A45', desc: '온몸을 감싸는 불꽃' },
+  ].map((it) => ({ ...it, premium: true, stepKm: it.runKm }));
+  const PREMIUM_MIN_RATIO = 0.9;      // 이 비율 이상 달려야 완주로 인정 (경로가 목표 거리와 살짝 다를 수 있어서)
+  const PREMIUM_MANUAL_RATIO = 0.98;  // 직접 "종료하기"를 눌렀다면 이 비율 이상 달렸어야 인정
+
+  function premiumKey() { return 'run-pacer-premium-' + (currentUser?.uid || 'anon'); }
+  function getOwnedPremiumIds() {
+    const set = new Set(Array.isArray(cachedProfile?.premiumItems) ? cachedProfile.premiumItems : []);
+    try { (JSON.parse(localStorage.getItem(premiumKey()) || '[]') || []).forEach((id) => set.add(id)); } catch (e) { /* 저장소 못 쓰면 서버 값만 */ }
+    return set;
+  }
+  function getOwnedPremium() {
+    const s = getOwnedPremiumIds();
+    return PREMIUM_ITEMS.filter((i) => s.has(i.id));
+  }
+  function grantPremium(id) {
+    const ids = getOwnedPremiumIds();
+    if (ids.has(id)) return;
+    ids.add(id);
+    cachedProfile = cachedProfile || {};
+    cachedProfile.premiumItems = Array.from(ids);
+    try { localStorage.setItem(premiumKey(), JSON.stringify(Array.from(ids))); } catch (e) { /* ignore */ }
+    if (currentUser && typeof Auth.addPremiumItem === 'function') Auth.addPremiumItem(currentUser.uid, id).catch(console.warn);
+  }
+
+  /* ================= 걷는 캐릭터 =================
+   * - 캐릭터는 앱을 켜든 폰을 끄든 계속 걸어요: 기본 시간당 10m. 웹앱은 꺼져 있으면 실제로 실행되지 못하니까
+   *   "마지막으로 확정한 시각(walkAt)부터 지금까지 흐른 실제 시간"으로 계산해서, 다시 열었을 때 그만큼 걸어 있어요.
+   * - 아이템이 많을수록(등급이 높을수록) 걷는 속도가 빨라져요. 속도가 바뀌기 직전(러닝 종료로 아이템을 얻을 때)에
+   *   그때까지 걸은 거리를 확정(settleWalk)해서, 예전 속도로 걸은 만큼은 그대로 인정돼요.
+   * - 값은 Firestore users/{uid}.walkMeters / walkAt(ms)에 저장하고 기기(localStorage)에도 같이 둬요.
+   */
+  const WALK_BASE_M_PER_HOUR = 10;
+  const WALK_TIER_BONUS = { 1: 0.04, 2: 0.06, 3: 0.09, 4: 0.12, 5: 0.25, 6: 0.35 }; // 아이템 하나당 걷기 속도 증가분
+
+  function walkMultiplierFor(km, premiumIds) {
+    let m = 1;
+    getUnlockedItems(km).forEach((i) => { m += WALK_TIER_BONUS[i.tier] || 0; });
+    PREMIUM_ITEMS.forEach((i) => { if (premiumIds && premiumIds.has(i.id)) m += WALK_TIER_BONUS[i.tier] || 0; });
+    return m;
+  }
+  function walkMultiplier() { return walkMultiplierFor(getTotalRunKm(), getOwnedPremiumIds()); }
+
+  function walkLocalKey() { return 'run-pacer-walk-' + (currentUser?.uid || 'anon'); }
+  function readWalkLocal() {
+    try {
+      const o = JSON.parse(localStorage.getItem(walkLocalKey()) || 'null');
+      if (o && isFinite(o.m) && isFinite(o.at) && o.at > 0) return { m: Number(o.m), at: Number(o.at) };
+    } catch (e) { /* ignore */ }
+    return null;
+  }
+  function saveWalkState(s) {
+    if (cachedProfile) { cachedProfile.walkMeters = s.m; cachedProfile.walkAt = s.at; }
+    try { localStorage.setItem(walkLocalKey(), JSON.stringify(s)); } catch (e) { /* ignore */ }
+    if (currentUser && typeof Auth.saveWalk === 'function') Auth.saveWalk(currentUser.uid, s.m, s.at).catch(console.warn);
+  }
+  // 저장된 "확정된 걸음 거리"와 그 시각. 둘 중(서버/기기) 더 최근에 확정된 값을 써요. 아무것도 없으면 지금부터 걷기 시작.
+  function getWalkState() {
+    const p = cachedProfile || {};
+    const remote = (Number(p.walkAt) > 0 && isFinite(Number(p.walkMeters))) ? { m: Number(p.walkMeters), at: Number(p.walkAt) } : null;
+    const local = readWalkLocal();
+    let s = remote && local ? (local.at > remote.at ? local : remote) : (remote || local);
+    if (!s) {
+      s = { m: 0, at: Date.now() };
+      if (cachedProfile || !currentUser) saveWalkState(s); // 프로필을 아직 못 불러왔으면 저장은 미룸(서버 값을 덮어쓰지 않으려고)
+    }
+    return s;
+  }
+  function currentWalkMeters() {
+    const s = getWalkState();
+    const hours = Math.max(Date.now() - s.at, 0) / 3600000;
+    return Math.max(s.m + hours * WALK_BASE_M_PER_HOUR * walkMultiplier(), 0);
+  }
+  function settleWalk() {
+    if (currentUser && !cachedProfile) return; // 프로필을 못 불러온 상태에선 확정을 미룸
+    const now = Date.now();
+    saveWalkState({ m: currentWalkMeters(), at: now });
+  }
+  function fmtWalkDist(m) { return m < 1000 ? m.toFixed(2) + 'm' : (m / 1000).toFixed(3) + 'km'; }
+  function tickWalk() {
+    const els = document.querySelectorAll('[data-walk-dist]');
+    if (!els.length) return;
+    const txt = fmtWalkDist(currentWalkMeters());
+    els.forEach((el) => { el.textContent = txt; });
+  }
+
   function getTotalRunKm() { return Math.max(cachedProfile?.distanceRunKm || 0, 0); }
 
   function getUnlockedItems(km) {
@@ -70,7 +174,7 @@
   // 부위별로 해금된 것 중 가장 높은 등급 하나가 장착됨 (같은 부위에서 더 좋은 게 나오면 자동 진화)
   function getEquippedItems(km) {
     const equipped = {};
-    getUnlockedItems(km).forEach((it) => {
+    getUnlockedItems(km).concat(getOwnedPremium()).forEach((it) => {
       if (!equipped[it.slot] || it.tier >= equipped[it.slot].tier) equipped[it.slot] = it;
     });
     return equipped;
@@ -85,8 +189,44 @@
     return ITEM_CATALOG.filter((i) => i.unlockKm > prevKm + 1e-9 && i.unlockKm <= prevKm + gainKm + 1e-9);
   }
 
+  // 고급 아이템 아이콘
+  function premiumGlyphSvg(item) {
+    let inner = '';
+    switch (item.id) {
+      case 'p_halo':
+        inner = '<ellipse cx="24" cy="27" rx="17" ry="7" fill="none" stroke="#FFE98A" stroke-width="4.5"/><ellipse cx="24" cy="25.6" rx="17" ry="7" fill="none" stroke="#fff" stroke-width="1.2" opacity=".75"/><path d="M8 10l1.4 3 3 1.4-3 1.4L8 19l-1.4-3.2-3-1.4 3-1.4z" fill="#FFF3B0"/><path d="M40 33l1 2.2 2.2 1-2.2 1L40 39.5l-1-2.3-2.2-1 2.2-1z" fill="#FFF3B0"/>';
+        break;
+      case 'p_holovisor':
+        inner = '<rect x="3" y="15" width="42" height="19" rx="9.5" fill="#00E5FF"/><rect x="7" y="19" width="34" height="11" rx="5.5" fill="#052033"/><path d="M11 24.5h26" stroke="#7DF9FF" stroke-width="1.6"/><path d="M12 21.5h9M27 27.5h9" stroke="#fff" stroke-width="1.6" opacity=".55" stroke-linecap="round"/>';
+        break;
+      case 'p_lightboots':
+        inner = '<path d="M14 5h15v22l13 7v9H8z" fill="#FFE066"/><rect x="8" y="38" width="34" height="5" rx="2" fill="#fff"/><path d="M27 8l-8 14h6l-4 12 12-17h-7z" fill="#B45309"/><rect x="14" y="5" width="15" height="4" fill="#fff" opacity=".5"/>';
+        break;
+      case 'p_wings':
+        inner = '<path d="M22 36C10 36 4 24 3 8c9 3 15 9 19 20z" fill="#EAF2FF"/><path d="M26 36c12 0 18-12 19-28-9 3-15 9-19 20z" fill="#EAF2FF"/><path d="M20 30C14 24 10 18 8 13M28 30c6-6 10-12 12-17" stroke="#9DB8FF" stroke-width="1.6" fill="none" stroke-linecap="round"/><circle cx="24" cy="38" r="3" fill="#FFE98A"/>';
+        break;
+      case 'p_nebula':
+        inner = '<path d="M6 36L8 12l10 10 6-15 6 15 10-10 2 24z" fill="#7C5CFF" stroke="#38F2FF" stroke-width="1.8" stroke-linejoin="round"/><circle cx="24" cy="27" r="3.4" fill="#FFF3B0"/><circle cx="13" cy="30" r="2" fill="#38F2FF"/><circle cx="35" cy="30" r="2" fill="#FF5CCB"/>';
+        break;
+      case 'p_cybersuit':
+        inner = '<path d="M15 6Q24 13 33 6L45 15L39 22L35 19V42H13V19L9 22L3 15z" fill="#141B3A" stroke="#38F2FF" stroke-width="1.8" stroke-linejoin="round"/><path d="M24 12v30" stroke="#38F2FF" stroke-width="1.6"/><circle cx="24" cy="26" r="4.5" fill="#38F2FF"/><circle cx="24" cy="26" r="2" fill="#fff"/>';
+        break;
+      case 'p_baton':
+        inner = '<rect x="20" y="4" width="8" height="40" rx="4" fill="#C58BFF"/><rect x="22.5" y="6" width="3" height="36" rx="1.5" fill="#fff" opacity=".85"/><path d="M14 14l-4 4 4 4M34 26l4 4-4 4" stroke="#FFF3B0" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>';
+        break;
+      case 'p_flameaura':
+        inner = '<path d="M24 3C29 12 38 16 36 28C35 37 29 44 24 45C19 44 13 37 12 28C10 18 19 14 24 3z" fill="#FF7A45"/><path d="M24 17C27 23 32 26 31 32C30 37 27 40 24 41C21 40 18 37 17 32C16 26 21 23 24 17z" fill="#FFD60A"/><path d="M24 28c2 3 3 5 2 8-1 1-3 1-4 0-1-3 0-5 2-8z" fill="#fff" opacity=".8"/>';
+        break;
+      default:
+        inner = `<circle cx="24" cy="24" r="12" fill="${item.color}"/>`;
+    }
+    const sparkle = '<path d="M41 4l1.6 3.6L46 9l-3.4 1.4L41 14l-1.6-3.6L36 9l3.4-1.4z" fill="#FFF3B0"/><path d="M6 6l1.1 2.4L9.5 9.5 7.1 10.6 6 13l-1.1-2.4L2.5 9.5l2.4-1.1z" fill="#FFF3B0"/>';
+    return `<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><defs><filter id="ig-glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g filter="url(#ig-glow)">${inner}</g>${sparkle}</svg>`;
+  }
+
   // 아이템 하나를 작은 아이콘(SVG)으로 그림 - 부위와 등급에 따라 모양이 달라짐
   function itemGlyphSvg(item) {
+    if (item.premium) return premiumGlyphSvg(item);
     const c = item.color;
     const dark = 'rgba(0,0,0,0.3)';
     let inner = '';
@@ -150,13 +290,28 @@
     const legW = +(10 * muscle).toFixed(1);
     const armW = +(7 * muscle).toFixed(1);
     const torsoW = +(32 * muscle).toFixed(1);
-    const e = equipped || {};
+    // 고급 아이템(ep)은 기본 아이템(e)과 따로 그려서 같은 부위의 기본 아이템을 대체해요
+    const eAll = equipped || {};
+    const e = {};
+    const ep = {};
+    Object.keys(eAll).forEach((s) => { (eAll[s].premium ? ep : e)[s] = eAll[s]; });
+    if (ep.halo && ep.halo.id === 'p_nebula' && e.head && e.head.tier >= 3) delete e.head; // 왕관끼리 겹치지 않게
     const glow = (item, s) => (item && item.tier >= 3 ? `<g filter="url(#rg-glow)">${s}</g>` : s);
 
     // 몸통 뒤 (망토)
     let behind = '';
     if (e.torso && e.torso.tier >= 4) {
       behind = `<path d="M${100 - torsoW / 2 - 2} 64 Q100 58 ${100 + torsoW / 2 + 2} 64 L${100 + torsoW / 2 + 24} 140 Q100 152 ${100 - torsoW / 2 - 24} 140Z" fill="${e.torso.color}" opacity="0.95"/>`;
+    }
+
+    // 몸통 뒤에 깔리는 효과 (오라 / 날개)
+    let behindFx = '';
+    if (ep.aura) {
+      behindFx += `<ellipse class="runner-aura" cx="100" cy="112" rx="60" ry="94" fill="url(#rg-aura)"/><path class="runner-aura" d="M54 152C46 122 60 102 52 76C70 90 72 108 70 130z M146 152C154 122 140 102 148 76C130 90 128 108 130 130z" fill="#FF7A45" opacity=".6"/>`;
+    }
+    if (ep.back) {
+      const wing = `<g class="runner-wing" style="transform-origin:96px 82px;"><path d="M96 78C74 70 50 66 30 42C28 66 40 92 66 102C78 106 90 100 96 96z" fill="#EAF2FF" opacity=".96"/><path d="M92 84C76 80 58 74 42 58M90 92C76 92 62 88 50 78" stroke="#B8CCFF" stroke-width="2" fill="none" stroke-linecap="round"/></g>`;
+      behindFx += `<g filter="url(#rg-glow)">${wing}<g transform="translate(200 0) scale(-1 1)">${wing}</g></g>`;
     }
 
     // 다리에 붙는 것들 (다리 애니메이션 그룹 안에 넣어서 같이 움직임)
@@ -166,7 +321,9 @@
       if (e.legs.tier === 1) legExtra += `<rect x="${legX - 2}" y="138" width="${legW + 4}" height="13" rx="5" fill="${e.legs.color}"/><rect x="${legX - 2}" y="143" width="${legW + 4}" height="2.5" fill="#fff" opacity=".4"/>`;
       else legExtra += `<rect x="${legX - 1}" y="118" width="${legW + 2}" height="52" rx="${(legW + 2) / 2}" fill="${e.legs.color}" opacity=".95"/><rect x="${legX - 1}" y="140" width="${legW + 2}" height="2.5" fill="#fff" opacity=".4"/>`;
     }
-    if (e.feet) {
+    if (ep.feet) {
+      legExtra += glow(ep.feet, `<rect x="${legX - 2}" y="160" width="${legW + 14}" height="14" rx="6" fill="#FFE066"/><rect x="${legX - 2}" y="170" width="${legW + 14}" height="4" rx="2" fill="#fff"/><path d="M${(legX + legW / 2 + 2).toFixed(1)} 161l-5 8h4l-3 6 8-9h-4z" fill="#B45309"/>`);
+    } else if (e.feet) {
       const f = e.feet;
       if (f.tier === 1) legExtra += `<rect x="${legX - 1}" y="155" width="${legW + 2}" height="18" rx="4" fill="${f.color}"/><rect x="${legX - 1}" y="158" width="${legW + 2}" height="3" fill="#FF6B5E"/>`;
       else legExtra += glow(f, `<rect x="${legX - 2}" y="163" width="${legW + 13}" height="11" rx="5" fill="${f.color}"/><rect x="${legX - 2}" y="171" width="${legW + 13}" height="4" rx="2" fill="#fff"/>` +
@@ -176,7 +333,10 @@
 
     // 몸통 위에 덮는 옷
     let torsoOverlay = '';
-    if (e.torso) {
+    if (ep.torso) {
+      const x = (100 - torsoW / 2).toFixed(1);
+      torsoOverlay = glow(ep.torso, `<rect x="${x}" y="60" width="${torsoW}" height="60" rx="16" fill="#141B3A" stroke="#38F2FF" stroke-width="1.6"/><path d="M100 64V118M${(100 - torsoW / 2 + 6).toFixed(1)} 76L100 84L${(100 + torsoW / 2 - 6).toFixed(1)} 76" stroke="#38F2FF" stroke-width="1.6" fill="none"/><circle cx="100" cy="92" r="6" fill="#38F2FF"/><circle cx="100" cy="92" r="2.6" fill="#fff"/>`);
+    } else if (e.torso) {
       const t = e.torso;
       const x = (100 - torsoW / 2).toFixed(1);
       if (t.tier === 1) {
@@ -200,7 +360,9 @@
         ? `<rect x="${(armX - 2).toFixed(1)}" y="100" width="${armW + 4}" height="6" rx="3" fill="${e.wrist.color}"/>`
         : `<rect x="${(armX - 2).toFixed(1)}" y="99" width="${armW + 4}" height="9" rx="3" fill="#111" stroke="${e.wrist.color}" stroke-width="1.6"/>`;
     }
-    const handItem = e.hand
+    const handItem = ep.hand
+      ? glow(ep.hand, `<rect x="97" y="94" width="6" height="36" rx="3" fill="#C58BFF"/><rect x="98.6" y="96" width="2.8" height="32" rx="1.4" fill="#fff" opacity=".85"/>`)
+      : e.hand
       ? (e.hand.tier === 1
         ? `<rect x="96" y="108" width="8" height="15" rx="3" fill="${e.hand.color}"/><rect x="97.5" y="105" width="5" height="4" rx="1.5" fill="#fff" opacity=".85"/>`
         : `<rect x="95.5" y="108" width="9" height="16" rx="2.5" fill="${e.hand.color}"/><path d="M101 111l-3 5h2.5l-1.5 5 4.5-6.5h-3z" fill="#1a1a1a"/>`)
@@ -216,7 +378,9 @@
       else headItem = glow(h, `<path d="M80 31L82 12L91 21L100 6L109 21L118 12L120 31Z" fill="#FFD60A" stroke="#B8860B" stroke-width="1.5" stroke-linejoin="round"/><circle cx="100" cy="22" r="2.6" fill="#FF4D6D"/>`);
     }
     let faceItem = '';
-    if (e.face) {
+    if (ep.face) {
+      faceItem = glow(ep.face, `<rect x="77" y="34" width="46" height="14" rx="7" fill="#00E5FF" opacity=".92"/><rect x="81" y="37" width="38" height="8" rx="4" fill="#052033"/><path d="M84 41h32" stroke="#7DF9FF" stroke-width="1.6"/>`);
+    } else if (e.face) {
       const f = e.face;
       if (f.tier === 1) faceItem = `<circle cx="91" cy="41" r="5.5" fill="none" stroke="${f.color}" stroke-width="2"/><circle cx="109" cy="41" r="5.5" fill="none" stroke="${f.color}" stroke-width="2"/><line x1="96" y1="41" x2="104" y2="41" stroke="${f.color}" stroke-width="2"/>`;
       else if (f.tier === 2) faceItem = `<rect x="80" y="36" width="40" height="10" rx="5" fill="${f.color}"/><rect x="84" y="38" width="10" height="2" fill="#fff" opacity=".4"/>`;
@@ -228,10 +392,19 @@
         (e.neck.tier >= 2 ? `<rect x="104" y="60" width="7" height="22" rx="3" fill="${e.neck.color}"/>` : '');
     }
 
+    // 머리 위 후광 / 왕관 (고급)
+    let haloItem = '';
+    if (ep.halo) {
+      haloItem = ep.halo.id === 'p_nebula'
+        ? `<g filter="url(#rg-glow)"><path d="M79 28L79 6L90 17L100 2L110 17L121 6L121 28z" fill="#7C5CFF" stroke="#38F2FF" stroke-width="1.6" stroke-linejoin="round"/><circle cx="100" cy="15" r="3" fill="#FFF3B0"/><circle cx="87" cy="21" r="1.8" fill="#38F2FF"/><circle cx="113" cy="21" r="1.8" fill="#FF5CCB"/></g>`
+        : `<ellipse cx="100" cy="13" rx="21" ry="6" fill="none" stroke="#FFE98A" stroke-width="4" filter="url(#rg-glow)"/><ellipse cx="100" cy="12" rx="21" ry="6" fill="none" stroke="#fff" stroke-width="1" opacity=".7"/>`;
+    }
+
     return `<svg viewBox="0 0 200 200" width="${px}" height="${px}" style="transform: scaleY(${heightScale}); transform-origin: bottom center;">
-      <defs><filter id="rg-glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+      <defs><filter id="rg-glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+      <radialGradient id="rg-aura" cx="50%" cy="55%" r="50%"><stop offset="50%" stop-color="#FF7A45" stop-opacity="0"/><stop offset="85%" stop-color="#FF7A45" stop-opacity=".5"/><stop offset="100%" stop-color="#FFD60A" stop-opacity="0"/></radialGradient></defs>
       <g class="runner-bob">
-        ${behind}
+        ${behindFx}${behind}
         ${legGroup('runner-leg-back')}
         ${legGroup('runner-leg-front')}
         <rect x="${(100 - torsoW / 2).toFixed(1)}" y="60" width="${torsoW}" height="60" rx="16" fill="${level.color}"/>
@@ -243,9 +416,16 @@
           <rect x="${armX.toFixed(1)}" y="68" width="${armW}" height="45" rx="${armW / 2}" fill="#F4C6A0"/>${armExtra}${handItem}
         </g>
         <circle cx="100" cy="42" r="20" fill="#F4C6A0"/>
-        ${neckItem}${faceItem}${headItem}
+        ${neckItem}${faceItem}${headItem}${haloItem}
       </g>
     </svg>`;
+  }
+
+  // 받침 여부에 따라 조사를 붙여요 (예: 홀로 바이저 + 를 / 배턴 + 을)
+  function josa(word, withBatchim, without) {
+    const c = String(word || '').trim().slice(-1).charCodeAt(0);
+    const has = c >= 0xAC00 && c <= 0xD7A3 && (c - 0xAC00) % 28 !== 0;
+    return has ? withBatchim : without;
   }
 
   function fmtKm(km) { return (Math.round(km * 10) / 10).toFixed(1); }
@@ -554,8 +734,34 @@
   }
 
   // 경로를 조회해서 화면에 그려두기만 함 (GPS 추적은 "러닝 시작" 버튼을 눌러야 시작됨)
-  async function prepareRoute(cmd) {
+  function renderPremiumBanner() {
+    const el = $('premium-run-banner');
+    if (!el) return;
+    if (!premiumRun) { el.classList.add('hidden'); return; }
+    const need = premiumRun.km;
+    let sub = `${need}km 코스를 완주하면 받아요`;
+    if (premiumRun.routeKm && premiumRun.routeKm < need * PREMIUM_MIN_RATIO) {
+      sub = `이 경로는 ${premiumRun.routeKm.toFixed(1)}km라 ${need}km 조건에 못 미쳐요. 뒤로 가서 다시 만들어 보세요`;
+    } else if (premiumRun.routeKm) {
+      sub = `경로 ${premiumRun.routeKm.toFixed(1)}km · 끝까지 완주하면 받아요`;
+    } else {
+      sub = `${need}km 경로를 만드는 중이에요`;
+    }
+    el.innerHTML = `<div class="pm-banner-title">고급 아이템 도전 · ${escapeHtml(premiumRun.name)}</div><div class="pm-banner-sub">${escapeHtml(sub)}</div>`;
+    el.classList.remove('hidden');
+  }
+
+  // 고급 아이템 코스 시작: 근처에 그 거리만큼의 순환 경로를 만들고 러닝 준비 화면으로
+  function startPremiumRun(id) {
+    const it = PREMIUM_ITEMS.find((i) => i.id === id);
+    if (!it || getOwnedPremiumIds().has(id)) return;
+    prepareRoute({ type: 'distance_only', distance: it.runKm }, { premium: it });
+  }
+
+  async function prepareRoute(cmd, opts = {}) {
+    premiumRun = opts.premium ? { id: opts.premium.id, name: opts.premium.name, km: opts.premium.runKm, routeKm: 0 } : null;
     showScreen('screen-run');
+    renderPremiumBanner();
     announce('경로를 준비하고 있어요.');
     faceMarkerObj = null;
     traveledMeters = 0;
@@ -574,6 +780,14 @@
           route = await RouteEngine.buildRouteToDestination(start, dest, cmd.distance);
         } else if (cmd.type === 'distance_only') {
           route = await RouteEngine.buildLoopRoute(start, cmd.distance);
+          // 고급 아이템 코스는 목표 거리에 충분히 가까워야 하니, 많이 짧게 나오면 한 번 더 길게 만들어 봄
+          if (premiumRun && route.distanceMeters < premiumRun.km * 1000 * 0.92) {
+            try {
+              const scaled = Math.min(cmd.distance * (cmd.distance * 1000 / Math.max(route.distanceMeters, 1000)), cmd.distance * 1.3);
+              const retry = await RouteEngine.buildLoopRoute(start, scaled);
+              if (retry && retry.distanceMeters > route.distanceMeters) route = retry;
+            } catch (e) { /* 재시도 실패하면 처음 경로 그대로 */ }
+          }
         } else if (cmd.type === 'destination_only') {
           const dest = await geocode(cmd.destination, start);
           route = await RouteEngine.fetchWalkRoute(start, dest);
@@ -582,6 +796,7 @@
         currentBearing = mapHelper.initialBearing || 0;
         updateMarker(0, currentBearing, false);
         $('stat-distance').textContent = (route.distanceMeters / 1000).toFixed(1) + 'km';
+        if (premiumRun) { premiumRun.routeKm = route.distanceMeters / 1000; renderPremiumBanner(); }
 
         // 경로가 이미 채점된 경우(공원 경유/왕복 후보 비교) crosswalkCount/crosswalkDataOk가 붙어있고,
         // 직선 경로 그대로 쓴 경우엔 여기서 한 번 계산해서 시작 전에 미리 보여줌
@@ -789,10 +1004,28 @@
     const elapsedMin = elapsedSec / 60;
     const paceMinPerKm = km > 0.05 ? elapsedMin / km : 0;
 
+    // 걷는 캐릭터: 아이템이 늘어 속도가 바뀌기 전에, 지금까지 걸은 거리를 옛 속도로 확정
+    settleWalk();
+
     // 아이템은 러닝 "중"에는 주지 않고, 끝난 뒤 누적 거리에 따라 해금돼요 (누적 거리는 아래에서 서버에 더하기 전 값 기준)
     const prevKm = getTotalRunKm();
     const gainedKm = km > 0.02 ? km : 0;
     const newItems = getNewlyUnlocked(prevKm, gainedKm);
+
+    // 고급 아이템 도전 결과: 코스를 (거의) 다 달렸을 때만 지급
+    const ownedBefore = getOwnedPremiumIds();
+    const walkBefore = walkMultiplierFor(prevKm, ownedBefore);
+    let pr = null;
+    if (premiumRun) {
+      const item = PREMIUM_ITEMS.find((i) => i.id === premiumRun.id);
+      const target = premiumRun.km;
+      const done = !!item && !ownedBefore.has(item.id) && km >= target * PREMIUM_MIN_RATIO && (!manual || km >= target * PREMIUM_MANUAL_RATIO);
+      pr = { item, done, km, target };
+      if (done && currentUser) grantPremium(item.id);
+      else pr.done = false;
+      premiumRun = null;
+    }
+    const walk = { before: walkBefore, after: walkMultiplierFor(prevKm + gainedKm, getOwnedPremiumIds()) };
 
     if (currentUser && km > 0.02) {
       Auth.addDistance(currentUser.uid, km).then(() => {
@@ -814,10 +1047,12 @@
 
     let doneText = manual ? '러닝을 종료했어요. 수고했어요.' : '목표 거리에 도착했어요! 수고했어요.';
     if (newItems.length) doneText += ` 새 아이템, ${newItems.map((i) => i.name).join(', ')} 해금했어요!`;
+    if (pr && pr.done) doneText += ` 고급 아이템, ${pr.item.name} 획득했어요!`;
+    else if (pr) doneText += ` 코스를 다 못 채워서 고급 아이템은 받지 못했어요.`;
     announce(doneText);
     Music.pause();
 
-    renderFinishNewItems(newItems, prevKm, gainedKm);
+    renderFinishNewItems(newItems, prevKm, gainedKm, pr, walk);
     showFinishScreen({ km, elapsedSec, paceMinPerKm });
   }
 
@@ -1553,6 +1788,7 @@
   /* ---------------- 1-1. 홈 화면 ---------------- */
   async function loadHomeScreen() {
     if (!currentUser) return;
+    premiumRun = null; // 홈으로 돌아오면 고급 아이템 도전 상태는 해제
     renderHomeHero();
     renderRunnerCharacter();
     paintCachedHomePace(); // 앱을 켜자마자 지난번 계산한 페이스부터 바로 보여줌
@@ -1669,21 +1905,28 @@
 
     // 누적 거리로 해금된 아이템 중 부위별 최고 등급이 캐릭터에 장착돼서 보임
     const equipped = getEquippedItems(distanceKm);
-    const unlockedCount = getUnlockedItems(distanceKm).length;
+    const unlockedCount = getUnlockedItems(distanceKm).length + getOwnedPremium().length;
     const next = getNextItem(distanceKm);
     const nextText = next
       ? `다음 아이템 <b>${escapeHtml(next.name)}</b>까지 ${fmtKm(next.unlockKm - distanceKm)}km`
       : '모든 아이템을 해금했어요!';
 
+    const wmult = walkMultiplier();
+    const walkDur = Math.max(0.75, 2.4 / wmult).toFixed(2);
     box.innerHTML = `
-      ${buildRunnerSvg(level, equipped, 110)}
+      <div class="walker-top">
+        <div class="walker-label">걸어서 모은 거리</div>
+        <div class="walker-dist" data-walk-dist>${fmtWalkDist(currentWalkMeters())}</div>
+        <div class="walker-rate">시간당 ${(WALK_BASE_M_PER_HOUR * wmult).toFixed(1)}m · 아이템 ×${wmult.toFixed(2)}</div>
+      </div>
+      <div class="runner-walk" style="--walk-dur:${walkDur}s;">${buildRunnerSvg(level, equipped, 110)}</div>
       <div class="runner-level-name">${level.name}</div>
       ${progressHtml}
       <div class="runner-quote">${quote}</div>
       <button type="button" class="items-open-btn" data-open-items="1">
         <span class="items-open-icon">${itemsBagIcon()}</span>
         <span class="items-open-text">
-          <span class="items-open-title">아이템 창 · ${unlockedCount}/${ITEM_CATALOG.length}</span>
+          <span class="items-open-title">아이템 창 · ${unlockedCount}/${ITEM_CATALOG.length + PREMIUM_ITEMS.length}</span>
           <span class="items-open-sub">${nextText}</span>
         </span>
         <span class="items-open-arrow">›</span>
@@ -1700,6 +1943,46 @@
     itemsFilter = 'all';
     renderItemsScreen();
     showScreen('screen-items');
+  }
+
+  function premiumCardHtml(it, owned, equipped) {
+    const isOwned = owned.has(it.id);
+    const isEq = equipped[it.slot] && equipped[it.slot].id === it.id;
+    const tierInfo = TIER_INFO[it.tier];
+    const bonus = Math.round((WALK_TIER_BONUS[it.tier] || 0) * 100);
+    const state = isOwned
+      ? `<div class="pm-state${isEq ? ' on' : ''}">${isEq ? '보유 · 장착중' : '보유 · 다른 아이템 장착'}</div>`
+      : `<button type="button" class="pm-btn" data-pm-start="${it.id}">${it.runKm}km 달리고 받기</button>`;
+    return `
+      <div class="pm-card tier-${it.tier}${isOwned ? ' owned' : ''}">
+        <div class="pm-glyph">${itemGlyphSvg(it)}</div>
+        <div class="pm-body">
+          <div class="pm-name">${escapeHtml(it.name)} <span class="item-step-badge inline km${it.runKm}">${it.runKm}km</span></div>
+          <div class="pm-tier" style="color:${tierInfo.color}">${tierInfo.name} · ${SLOT_INFO[it.slot]} · 걷기 +${bonus}%</div>
+          <div class="pm-desc">${escapeHtml(it.desc)}</div>
+          ${state}
+        </div>
+      </div>`;
+  }
+
+  function renderPremiumSection() {
+    const box = $('items-premium');
+    if (!box) return;
+    const owned = getOwnedPremiumIds();
+    const equipped = getEquippedItems(getTotalRunKm());
+    const count = PREMIUM_ITEMS.filter((i) => owned.has(i.id)).length;
+    const group = (km) => `
+      <div class="pm-group-title"><span class="item-step-badge inline km${km}">${km}km</span> 코스</div>
+      <div class="pm-list">${PREMIUM_ITEMS.filter((i) => i.runKm === km).map((i) => premiumCardHtml(i, owned, equipped)).join('')}</div>`;
+    box.innerHTML = `
+      <div class="items-section-head">
+        <div class="items-section-title">고급 아이템 <small>${count}/${PREMIUM_ITEMS.length}</small></div>
+        <div class="items-section-sub">5km · 7km 코스를 끝까지 완주하면 받아요. 버튼을 누르면 내 주변에 그 거리만큼 경로를 만들어서 러닝을 준비해요.</div>
+      </div>
+      ${group(5)}${group(7)}
+      <div class="items-section-head" style="margin-top:22px;">
+        <div class="items-section-title">기본 아이템 <small>달릴 때마다 누적 거리로 자동 해금</small></div>
+      </div>`;
   }
 
   function itemCardHtml(item, ctx) {
@@ -1730,6 +2013,9 @@
     const unlocked = getUnlockedItems(km);
     const level = getCharacterLevel(km);
     const next = getNextItem(km);
+    const wmult = walkMultiplier();
+    const walkDur = Math.max(0.75, 2.4 / wmult).toFixed(2);
+    renderPremiumSection();
 
     // 위쪽: 캐릭터 + 해금 현황 + 다음 아이템까지 진행도
     let nextHtml;
@@ -1750,11 +2036,12 @@
     }
     $('items-hero').innerHTML = `
       <div class="items-hero-row">
-        <div class="items-hero-char">${buildRunnerSvg(level, equipped, 118)}<div class="runner-level-name" style="font-size:15px; margin-top:2px;">${level.name}</div></div>
+        <div class="items-hero-char"><div class="runner-walk" style="--walk-dur:${walkDur}s;">${buildRunnerSvg(level, equipped, 118)}</div><div class="runner-level-name" style="font-size:15px; margin-top:2px;">${level.name}</div></div>
         <div class="items-hero-info">
-          <div class="items-hero-count"><b>${unlocked.length}</b><span>/${ITEM_CATALOG.length} 해금</span></div>
+          <div class="items-hero-count"><b>${unlocked.length + getOwnedPremium().length}</b><span>/${ITEM_CATALOG.length + PREMIUM_ITEMS.length} 보유</span></div>
           <div class="items-hero-km">누적 ${km.toFixed(1)}km 달렸어요</div>
-          <div class="items-hero-hint">러닝이 끝나고 누적 거리가 쌓이면 자동으로 해금돼요. 같은 부위는 더 높은 등급이 나오면 진화해요.</div>
+          <div class="items-hero-walk">걷는 거리 <b data-walk-dist>${fmtWalkDist(currentWalkMeters())}</b><br/>시간당 ${(WALK_BASE_M_PER_HOUR * wmult).toFixed(1)}m (×${wmult.toFixed(2)})</div>
+          <div class="items-hero-hint">아이템이 많고 등급이 높을수록 캐릭터가 더 빨리 걸어요.</div>
         </div>
       </div>
       ${nextHtml}`;
@@ -1795,36 +2082,49 @@
     }).join('');
   }
 
-  // 러닝 완료 화면 - 이번 러닝으로 새로 해금된 아이템 표시
-  function renderFinishNewItems(newItems, prevKm, gainKm) {
+  // 러닝 완료 화면 - 이번 러닝으로 새로 해금된 아이템 / 고급 아이템 도전 결과 / 걷기 속도 변화
+  function renderFinishNewItems(newItems, prevKm, gainKm, pr, walk) {
     const card = $('finish-new-items');
     if (!card) return;
-    if (!newItems.length) {
+    const mini = (it) => `
+      <div class="item-card tier-${it.tier} equipped">
+        <span class="item-step-badge km${it.premium ? it.runKm : it.stepKm}">${it.premium ? it.runKm : it.stepKm}km</span>
+        <div class="item-glyph">${itemGlyphSvg(it)}</div>
+        <div class="item-name">${escapeHtml(it.name)}</div>
+        <div class="item-tier-tag" style="color:${TIER_INFO[it.tier].color}">${TIER_INFO[it.tier].name}</div>
+      </div>`;
+    const speedLine = walk && walk.after > walk.before + 1e-9
+      ? `<div class="new-items-next" style="margin-top:10px;">캐릭터 걷는 속도 <b>×${walk.before.toFixed(2)} → ×${walk.after.toFixed(2)}</b></div>` : '';
+    let html = '';
+    if (pr && pr.done) {
+      html += `<div class="section-card-head"><span class="badge">${itemsBagIcon()}</span>고급 아이템 획득!</div>
+        <div class="new-items-row">${mini(pr.item)}</div>
+        <div class="new-items-next" style="margin-top:8px;">${pr.target}km 코스를 완주해서 <b>${escapeHtml(pr.item.name)}</b>${josa(pr.item.name, '을', '를')} 받았어요.</div>`;
+    } else if (pr) {
+      const remain = Math.max(pr.target * PREMIUM_MIN_RATIO - pr.km, 0);
+      html += `<div class="section-card-head"><span class="badge">${itemsBagIcon()}</span>고급 아이템 도전</div>
+        <div class="new-items-next">${escapeHtml(pr.item ? pr.item.name : '고급 아이템')}${josa(pr.item ? pr.item.name : '고급 아이템', '은', '는')} 아직이에요. ${pr.target}km 코스를 완주해야 받아요${remain > 0 ? ` (<b>${fmtKm(remain)}km</b> 더)` : ''}. 다음에 다시 도전해 보세요!</div>`;
+    }
+    if (newItems.length) {
+      html += `<div class="section-card-head"${html ? ' style="margin-top:16px;"' : ''}><span class="badge">${itemsBagIcon()}</span>새 아이템 해금!</div>
+        <div class="new-items-row">${newItems.map(mini).join('')}</div>`;
+    } else if (!pr) {
       const next = getNextItem(prevKm + gainKm);
       if (next && gainKm > 0) {
         const remain = next.unlockKm - (prevKm + gainKm);
-        card.innerHTML = `<div class="section-card-head"><span class="badge">${itemsBagIcon()}</span>다음 아이템</div>
+        html += `<div class="section-card-head"><span class="badge">${itemsBagIcon()}</span>다음 아이템</div>
           <div class="new-items-next">${escapeHtml(next.name)}까지 <b>${fmtKm(remain)}km</b> 남았어요</div>`;
-        card.classList.remove('hidden');
-      } else {
-        card.classList.add('hidden');
       }
-      return;
     }
-    card.innerHTML = `
-      <div class="section-card-head"><span class="badge">${itemsBagIcon()}</span>새 아이템 해금!</div>
-      <div class="new-items-row">
-        ${newItems.map((it) => `
-          <div class="item-card tier-${it.tier} equipped">
-            <span class="item-step-badge${it.stepKm === 5 ? ' km5' : ''}">${it.stepKm}km</span>
-            <div class="item-glyph">${itemGlyphSvg(it)}</div>
-            <div class="item-name">${escapeHtml(it.name)}</div>
-            <div class="item-tier-tag" style="color:${TIER_INFO[it.tier].color}">${TIER_INFO[it.tier].name}</div>
-          </div>`).join('')}
-      </div>
-      <button type="button" class="btn-secondary" id="btn-finish-items" style="margin-top:12px;">아이템 창에서 보기</button>`;
+    if (!html) { card.classList.add('hidden'); return; }
+    html += speedLine;
+    if (newItems.length || (pr && pr.done)) {
+      html += '<button type="button" class="btn-secondary" id="btn-finish-items" style="margin-top:12px;">아이템 창에서 보기</button>';
+    }
+    card.innerHTML = html;
     card.classList.remove('hidden');
-    $('btn-finish-items').addEventListener('click', openItemsScreen);
+    const b = $('btn-finish-items');
+    if (b) b.addEventListener('click', openItemsScreen);
   }
 
   function renderHomeMap(runs) {
@@ -2330,6 +2630,7 @@
 
     $('btn-start-run').addEventListener('click', () => {
       $('btn-start-run').classList.add('hidden');
+      $('premium-run-banner').classList.add('hidden');
       requestCompassPermission();
       runCountdown();
     });
@@ -2375,6 +2676,11 @@
     $('runner-character-box').addEventListener('click', (e) => {
       if (e.target.closest('[data-open-items]')) openItemsScreen();
     });
+    $('items-premium').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-pm-start]');
+      if (b) startPremiumRun(b.dataset.pmStart);
+    });
+    setInterval(tickWalk, 1000); // 걷는 캐릭터의 거리 표시를 1초마다 갱신
     $('btn-items-back').addEventListener('click', () => {
       showScreen('screen-home');
       loadHomeScreen();

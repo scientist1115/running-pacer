@@ -131,6 +131,24 @@ const Auth = (() => {
     );
   }
 
+  // 고급 아이템(5km/7km 코스 완주) 획득 기록 - users/{uid}.premiumItems 배열에 추가
+  async function addPremiumItem(uid, itemId) {
+    if (!uid || !itemId) return;
+    await db.collection('users').doc(uid).set(
+      { premiumItems: firebase.firestore.FieldValue.arrayUnion(itemId) },
+      { merge: true }
+    );
+  }
+
+  // 걷는 캐릭터: 확정된 걸음 거리(m)와 확정 시각(ms)을 저장 - 앱이 꺼져 있던 시간은 이 시각부터 계산해요
+  async function saveWalk(uid, meters, atMs) {
+    if (!uid || !isFinite(meters) || !isFinite(atMs)) return;
+    await db.collection('users').doc(uid).set(
+      { walkMeters: Number(meters), walkAt: Number(atMs) },
+      { merge: true }
+    );
+  }
+
   // 러닝 한 회차 기록을 저장 (홈 화면의 기록 목록/페이스 그래프/지도 겹쳐보기용)
   async function saveRun(uid, { points, distanceKm, durationSec, paceMinPerKm }) {
     await db.collection('users').doc(uid).collection('runs').add({
@@ -220,7 +238,7 @@ const Auth = (() => {
 
   return {
     signUp, logIn, logInWithGoogle, onAuthChange, signOut, isValidId, isValidPassword,
-    checkUsernameAvailable, getProfile, saveGoal, addDistance, saveRun, listRuns, toKoreanError,
+    checkUsernameAvailable, getProfile, saveGoal, addDistance, addPremiumItem, saveWalk, saveRun, listRuns, toKoreanError,
     getYearRunStats, publishLeaderboard, unpublishLeaderboard, isPublished, getLeaderboardTop,
     setRememberMe,
   };
