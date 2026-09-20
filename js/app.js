@@ -453,7 +453,7 @@
   let arUsingXr = false;
   let currentStream = null;
   let route = null;       // { points, distanceMeters, turns }
-  let currentRouteOptions = []; // 신호등 개수별 대안 경로들 (경로가 준비된 화면에서 고를 수 있음)
+  let xwWant = 0, xwBaseline = 0, xwToken = 0, xwTimer = null, xwPending = false, xwDir = 0, xwPrevCount = 0; // 횡단보도 개수 스테퍼 상태
   let mapHelper = null;   // route.js의 renderOnMap 결과 (MapLibre)
   let watchId = null;
   let elapsedTimer = null; // 러닝 중 경과시간(스톱워치) 1초마다 갱신하는 인터벌
@@ -473,6 +473,14 @@
   let orientationAttached = false;
   let lastKnownIsMoving = false;
   let lastCompassApply = 0;
+  // 경로 위 "내 진짜 위치" 추적: GPS 위치를 경로에 붙여서(스냅) 진행 위치를 정함
+  let navProgressM = 0;      // 경로 시작부터 지금까지 온 거리(m) - 뒤로는 줄어들지 않음
+  let navPos = null;         // 지도/AR에서 "내 위치"로 쓰는 좌표 (경로 위에 붙었으면 경로 위 점, 벗어났으면 실제 GPS)
+  let offRouteM = 0;         // 경로에서 떨어진 거리(m)
+  let offRouteCount = 0;     // 연속으로 경로에서 벗어난 GPS 횟수
+  let lastSnapAt = 0;
+  let lastOffRouteWarnAt = 0;
+  let distAnchor = null;     // 달린 거리 계산용 기준점 (노이즈 기준을 넘게 움직였을 때만 갱신)
   let homeMapObj = null;     // 홈 화면 지도(지난 경로 겹쳐보기) MapLibre 인스턴스
   let finishMapObj = null;   // 완료 화면 지도 MapLibre 인스턴스
   let paceSplits = [];       // 이번 러닝의 구간별 페이스 기록 (완료 화면 그래프용)
@@ -638,6 +646,10 @@
     prepareRoute(cmd);
   }
 
+  function resetNavState() {
+    navProgressM = 0; navPos = null; offRouteM = 0; offRouteCount = 0; lastSnapAt = 0; lastOffRouteWarnAt = 0; distAnchor = null;
+  }
+
   // 카운트다운 후 실제로 GPS 추적을 시작함 (경로는 이미 준비되어 화면에 그려진 상태)
   function runCountdown() {
     showScreen('screen-countdown');
@@ -652,6 +664,7 @@
         showScreen('screen-run');
         startedAt = Date.now();
         traveledMeters = 0;
+        resetNavState();
         goalCountedForThisRun = false;
         announcedTurnCount = 0;
         paceSplits = [];
@@ -700,6 +713,11 @@
         heading = (360 - e.alpha) % 360; // 안드로이드 근사치
       }
       if (heading === null) return;
+      // 센서 값이 떨리니까 이전 값과 섞어서 부드럽게 (0°/360° 경계는 짧은 쪽으로 돌게 계산)
+      if (compassHeading !== null) {
+        const diff = ((heading - compassHeading + 540) % 360) - 180;
+        heading = (compassHeading + diff * 0.45 + 360) % 360;
+      }
       compassHeading = heading;
 
       const now = Date.now();
@@ -707,15 +725,21 @@
       lastCompassApply = now;
       currentBearing = heading;
 
-      // 멈춰 서 있을 때는 위치 이동 없이 방향만 바로 반영 (몸을 돌리면 지도도 즉시 도는 느낌)
-      if (!lastKnownIsMoving && mapHelper) {
-        mapHelper.map.setBearing(heading);
+      // 움직이는 중이든 서 있든, 몸을 돌리면 지도가 바로 같이 돌게 함 (카메라는 내 위치 앞쪽을 계속 보게)
+      if (mapHelper) {
+        const here = navPos || lastPos;
+        if (here) {
+          const la = RouteEngine.destinationPoint(here, heading, 38);
+          mapHelper.map.jumpTo({ center: [la.lng, la.lat], bearing: heading });
+        } else {
+          mapHelper.map.setBearing(heading);
+        }
       }
       // AR 모드면 GPS 갱신을 기다리지 않고 방향이 바뀔 때마다 바로 다시 그림 -
       // 안 그러면 제자리에서 몸만 돌렸을 때 다음 GPS 신호가 올 때까지 화살표가 그대로 있게 됨
       if (arModeEnabled && lastPos) {
         if (arUsingXr) ArXR.updatePath(getLookaheadPathPoints());
-        else updateArOverlay(lastPos, heading);
+        else updateArOverlay(navPos || lastPos, heading);
       }
     };
     window.addEventListener('deviceorientationabsolute', handler, true);
@@ -765,18 +789,23 @@
     announce('경로를 준비하고 있어요.');
     faceMarkerObj = null;
     traveledMeters = 0;
+    resetNavState();
     $('turn-banner').classList.add('hidden');
     $('btn-start-run').classList.add('hidden');
+    $('btn-start-run').disabled = false;
     $('route-ready-sub').textContent = '경로가 준비됐어요';
     $('crosswalk-selector').classList.add('hidden');
-    currentRouteOptions = [];
+    xwToken += 1;
+    xwPending = false;
+    clearTimeout(xwTimer);
 
     navigator.geolocation.getCurrentPosition(async (pos) => {
       const start = { lat: pos.coords.latitude, lng: pos.coords.longitude };
       lastPos = start; // 검색 기준점을 내 실제 현재 위치로 즉시 반영
       try {
         if (cmd.type === 'destination_with_distance') {
-          const dest = await geocode(cmd.destination, start);
+          // destPoint: 목적지 검색 화면에서 사용자가 직접 고른 장소(좌표). 음성 입력일 때만 이름으로 다시 검색함
+          const dest = cmd.destPoint || await geocode(cmd.destination, start);
           route = await RouteEngine.buildRouteToDestination(start, dest, cmd.distance);
         } else if (cmd.type === 'distance_only') {
           route = await RouteEngine.buildLoopRoute(start, cmd.distance);
@@ -789,40 +818,25 @@
             } catch (e) { /* 재시도 실패하면 처음 경로 그대로 */ }
           }
         } else if (cmd.type === 'destination_only') {
-          const dest = await geocode(cmd.destination, start);
-          route = await RouteEngine.fetchWalkRoute(start, dest);
+          const dest = cmd.destPoint || await geocode(cmd.destination, start);
+          route = await RouteEngine.buildDestinationRoute(start, dest);
         }
-        mapHelper = RouteEngine.renderOnMap($('map-canvas'), route.points, mapHelper?.map);
-        currentBearing = mapHelper.initialBearing || 0;
-        updateMarker(0, currentBearing, false);
-        $('stat-distance').textContent = (route.distanceMeters / 1000).toFixed(1) + 'km';
-        if (premiumRun) { premiumRun.routeKm = route.distanceMeters / 1000; renderPremiumBanner(); }
+        drawRoute(route);
 
-        // 경로가 이미 채점된 경우(공원 경유/왕복 후보 비교) crosswalkCount/crosswalkDataOk가 붙어있고,
-        // 직선 경로 그대로 쓴 경우엔 여기서 한 번 계산해서 시작 전에 미리 보여줌
-        let crosswalkCount = route.crosswalkCount;
-        let crosswalkDataOk = route.crosswalkDataOk;
-        if (typeof crosswalkCount !== 'number') {
+        // 경로가 이미 채점된 경우(공원 경유/왕복 후보 비교)엔 crosswalkCount가 붙어있고,
+        // 아니면 여기서 한 번 계산해서 시작 전에 미리 보여줌
+        if (typeof route.crosswalkCount !== 'number') {
           const result = await RouteEngine.countCrosswalksNear(route.points);
-          crosswalkCount = result.count;
-          crosswalkDataOk = result.ok;
+          route.crosswalkCount = result.count;
+          route.crosswalkDataOk = result.ok;
+          route.crosswalkTmap = result.tmap;
         }
-        route.crosswalkCount = crosswalkCount;
-        route.crosswalkDataOk = crosswalkDataOk;
-
-        const readySub = !crosswalkDataOk
-          ? '횡단보도 정보를 확인하지 못했어요 - 직접 살펴보며 뛰어주세요'
-          : crosswalkCount === 0
-            ? '횡단보도 없이 갈 수 있어요'
-            : `횡단보도 ${crosswalkCount}회 예상돼요`;
-        $('route-ready-sub').textContent = readySub;
-        renderCrosswalkOptions(route);
-
-        announce(!crosswalkDataOk
-          ? '경로 준비됐어요. 이번엔 횡단보도 정보를 확인하지 못했어요. 직접 살펴보며 뛰어주세요. 시작 버튼을 눌러주세요.'
-          : crosswalkCount === 0
-            ? '경로 준비됐어요. 횡단보도 없이 갈 수 있어요. 시작 버튼을 눌러주세요.'
-            : `경로 준비됐어요. 횡단보도 ${crosswalkCount}번 건너요. 시작 버튼을 눌러주세요.`);
+        xwBaseline = route.crosswalkCount;
+        xwWant = route.crosswalkCount;
+        showCrosswalkInfo(route);
+        $('xw-status').textContent = crosswalkMessage(route);
+        renderXwWarn();
+        announce(`경로 준비됐어요. ${crosswalkMessage(route)}. 시작 버튼을 눌러주세요.`);
         $('btn-start-run').classList.remove('hidden');
       } catch (e) {
         announce('경로를 만드는 데 실패했어요. ' + e.message);
@@ -830,62 +844,259 @@
     }, () => announce('위치 정보를 가져올 수 없어요. GPS를 켜주세요.'), { enableHighAccuracy: true });
   }
 
-  // 채점된 대안 경로들(있다면)을 신호등 개수 기준으로 중복 없이 정리해서 칩으로 보여줌.
-  // 대안이 1개뿐이면(선택할 게 없으면) UI 자체를 숨김.
-  function renderCrosswalkOptions(chosenRoute) {
-    const rawOptions = chosenRoute.routeOptions?.length ? chosenRoute.routeOptions : [chosenRoute];
-    const seen = new Set();
-    const options = [];
-    for (const opt of rawOptions) {
-      const ok = opt.crosswalkDataOk !== false; // true/undefined면 성공으로 간주(구버전 경로 호환)
-      const count = typeof opt.crosswalkCount === 'number' ? opt.crosswalkCount : chosenRoute.crosswalkCount;
-      const key = ok ? `c${count}` : 'failed'; // 실패한 후보들은 전부 하나의 "확인불가" 옵션으로 묶음
-      if (seen.has(key)) continue; // 같은 개수면 이미 더 좋은 점수의 후보가 앞에 있었던 것
-      seen.add(key);
-      options.push({ ...opt, crosswalkCount: count, crosswalkDataOk: ok });
-    }
-    options.sort((a, b) => {
-      if (a.crosswalkDataOk !== b.crosswalkDataOk) return a.crosswalkDataOk ? -1 : 1; // 확인된 것 먼저, 확인불가는 맨 뒤
-      return a.crosswalkCount - b.crosswalkCount;
-    });
-    currentRouteOptions = options;
-
-    const box = $('crosswalk-selector');
-    const chipsEl = $('crosswalk-selector-chips');
-    chipsEl.innerHTML = '';
-    if (options.length <= 1) {
-      box.classList.add('hidden');
-      return;
-    }
-    options.forEach((opt) => {
-      const chip = document.createElement('button');
-      chip.type = 'button';
-      chip.className = 'crosswalk-chip' + (opt.crosswalkCount === chosenRoute.crosswalkCount ? ' active' : '');
-      chip.textContent = opt.crosswalkDataOk === false ? '확인불가' : (opt.crosswalkCount === 0 ? '0회' : `${opt.crosswalkCount}회`);
-      chip.addEventListener('click', () => applyRouteOption(opt));
-      chipsEl.appendChild(chip);
-    });
-    box.classList.remove('hidden');
-  }
-
-  // 사용자가 칩을 눌러 다른 신호등 개수의 경로를 고른 경우: 실제 진행 경로를 바꿔치기하고 지도/안내를 다시 그림
-  function applyRouteOption(opt) {
-    route = opt;
-    mapHelper = RouteEngine.renderOnMap($('map-canvas'), route.points, mapHelper?.map);
+  // 지도/마커/거리 표시를 현재 route로 갱신
+  function drawRoute(r) {
+    mapHelper = RouteEngine.renderOnMap($('map-canvas'), r.points, mapHelper?.map);
     currentBearing = mapHelper.initialBearing || 0;
     updateMarker(0, currentBearing, false);
-    $('stat-distance').textContent = (route.distanceMeters / 1000).toFixed(1) + 'km';
-    $('route-ready-sub').textContent = opt.crosswalkDataOk === false
-      ? '횡단보도 정보를 확인하지 못했어요 - 직접 살펴보며 뛰어주세요'
-      : opt.crosswalkCount === 0
-        ? '횡단보도 없이 갈 수 있어요'
-        : `횡단보도 ${opt.crosswalkCount}회 예상돼요`;
-    renderCrosswalkOptions(route);
-    announce(opt.crosswalkDataOk === false
-      ? '횡단보도 정보를 확인 못하는 경로로 바꿨어요.'
-      : opt.crosswalkCount === 0
-        ? '횡단보도 없는 경로로 바꿨어요.'
-        : `횡단보도 ${opt.crosswalkCount}회인 경로로 바꿨어요.`);
+    $('stat-distance').textContent = (r.distanceMeters / 1000).toFixed(1) + 'km';
+    if (premiumRun) { premiumRun.routeKm = r.distanceMeters / 1000; renderPremiumBanner(); }
+  }
+
+  // 횡단보도 안내 문구: 티맵 경로가 알려주는 횡단보도는 지도 데이터가 실패해도 세기 때문에,
+  // "확인 못했다"는 말은 정말로 아무 정보도 없을 때(0개 + 데이터 실패)만 씀
+  function crosswalkMessage(r) {
+    const n = r.crosswalkCount;
+    if (n > 0) return r.crosswalkDataOk === false ? `횡단보도 ${n}개 이상 예상돼요` : `횡단보도 ${n}개 예상돼요`;
+    if (r.crosswalkDataOk === false) return '횡단보도 정보를 확인하지 못했어요 - 직접 살펴보며 뛰어주세요';
+    return '횡단보도 없이 갈 수 있어요';
+  }
+
+  // 러닝 시작 버튼 문구/개수 스테퍼 표시
+  function showCrosswalkInfo(r) {
+    $('route-ready-sub').textContent = crosswalkMessage(r);
+    $('xw-count').textContent = r.crosswalkCount;
+    $('crosswalk-selector').classList.remove('hidden');
+  }
+
+  // 원래 경로보다 개수를 줄일수록 돌아가는/같은 곳을 도는 경로가 나오기 쉬워서, 줄인 정도에 따라 경고 강도를 올림
+  function renderXwWarn() {
+    const el = $('xw-warn');
+    const diff = xwBaseline - xwWant;
+    if (diff <= 0) { el.classList.add('hidden'); el.classList.remove('strong'); return; }
+    const strong = diff >= 3 || (xwBaseline > 0 && diff / xwBaseline >= 0.5);
+    el.classList.toggle('strong', strong);
+    el.textContent = strong
+      ? '주의: 개수를 많이 줄이면 같은 위치를 계속 빙빙 도는 경로가 나올 수 있어요. 지도에서 경로를 꼭 확인하세요.'
+      : '개수를 줄이면 돌아가는 길이 늘거나 같은 곳을 다시 지나는 경로가 나올 수 있어요.';
+    el.classList.remove('hidden');
+  }
+
+  // +/- 누를 때마다 숫자만 바로 바꾸고, 잠깐 멈추면(0.6초) 그 개수에 맞는 경로를 자동으로 다시 찾음
+  function changeXw(delta) {
+    if (!route) return;
+    const next = Math.max(0, Math.min(40, xwWant + delta));
+    if (next === xwWant) return;
+    if (!xwPending) { xwPrevCount = route.crosswalkCount; } // 연타 중이면 맨 처음 실제 개수를 기준으로 유지
+    xwPending = true;
+    xwDir = delta;
+    xwWant = next;
+    $('xw-count').textContent = next;
+    $('xw-status').textContent = '경로 다시 찾는 중…';
+    $('btn-start-run').disabled = true;
+    renderXwWarn();
+    clearTimeout(xwTimer);
+    xwTimer = setTimeout(applyXwWant, 600);
+  }
+
+  async function applyXwWant() {
+    const token = ++xwToken;
+    const want = xwWant;
+    try {
+      let next = await RouteEngine.refindRoute(route, want);
+      if (token !== xwToken) return; // 그 사이에 또 바꿨으면 이 결과는 버림
+      // 원하는 개수가 없어서 눌렀던 방향과 반대로 스냅됐다면(+를 눌렀는데 오히려 줄어드는 식), 그 방향으로 가장 가까운 다음 개수로 이동
+      if (!next.exact && next.ctx?.pool) {
+        const counts = next.ctx.pool.map((p) => p.crosswalkCount);
+        const wrong = xwDir > 0 ? next.crosswalkCount <= xwPrevCount : next.crosswalkCount >= xwPrevCount;
+        const dirCands = counts.filter((c) => (xwDir > 0 ? c > xwPrevCount : c < xwPrevCount));
+        if (wrong && dirCands.length) {
+          const alt = xwDir > 0 ? Math.min(...dirCands) : Math.max(...dirCands);
+          next = await RouteEngine.refindRoute(next, alt);
+          if (token !== xwToken) return;
+        }
+      }
+      xwPending = false;
+      route = next;
+      drawRoute(route);
+      const got = route.crosswalkCount;
+      let msg = crosswalkMessage(route);
+      if (got !== want) {
+        // 정확히 그 개수인 경로가 없으면 가장 가까운 걸로 맞추고 숫자도 실제 값으로 되돌림
+        xwWant = got;
+        $('xw-count').textContent = got;
+        msg = `${want}개인 경로는 못 찾아서 ${got}개 경로로 바꿨어요`;
+      }
+      $('xw-status').textContent = msg;
+      $('route-ready-sub').textContent = crosswalkMessage(route);
+      renderXwWarn();
+      announce(got !== want ? msg : `횡단보도 ${got}개인 경로로 바꿨어요.`);
+    } catch (e) {
+      if (token !== xwToken) return;
+      xwPending = false;
+      $('xw-status').textContent = '경로를 다시 찾지 못했어요. 잠시 후 다시 시도해 주세요';
+    } finally {
+      if (token === xwToken) $('btn-start-run').disabled = false;
+    }
+  }
+
+  /* ---------------- 목적지 검색 화면 (카카오 장소 자동완성) ---------------- */
+  let destPicked = null;   // { name, address, lat, lng }
+  let destWalkKm = null;   // 현재 위치 -> 목적지 걸어서 거리(km)
+  let destTimer = null, destToken = 0;
+
+  function destShowStep(step) {
+    ['search', 'choice', 'distance'].forEach((s) => $('dest-step-' + s).classList.toggle('hidden', s !== step));
+  }
+
+  function openDestScreen() {
+    showScreen('screen-dest');
+    destShowStep('search');
+    $('dest-input').value = '';
+    $('dest-list').innerHTML = '';
+    $('dest-status').textContent = '';
+    $('dest-extra').value = '';
+    $('dest-dist-input').value = '';
+    $('dest-choice-err').textContent = '';
+    $('dest-dist-err').textContent = '';
+    destPicked = null; destWalkKm = null;
+    // 검색 결과를 내 주변 기준으로 정렬하려고 현재 위치를 미리 받아둠
+    if (!lastPos && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition((p) => { lastPos = { lat: p.coords.latitude, lng: p.coords.longitude }; }, () => {}, { enableHighAccuracy: true, timeout: 8000 });
+    }
+    setTimeout(() => $('dest-input').focus(), 120);
+  }
+
+  async function fetchPlaceSuggestions(q) {
+    try {
+      const res = await fetch('/api/place-suggest', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyword: q, lat: lastPos?.lat, lng: lastPos?.lng }),
+      });
+      if (!res.ok) throw new Error('suggest ' + res.status);
+      return (await res.json()).places || [];
+    } catch (e) {
+      // 새 API가 아직 배포 안 됐거나 실패하면 기존 주변 검색으로 대신함 (주소/거리 표시는 없음)
+      const list = await RouteEngine.searchNearby(q, lastPos || { lat: 37.5665, lng: 126.978 });
+      return (list || []).map((p) => ({ name: p.name, address: '', category: '', lat: p.lat, lng: p.lng, distance: null }));
+    }
+  }
+
+  async function runDestSearch(q) {
+    const token = ++destToken;
+    const status = $('dest-status');
+    const listEl = $('dest-list');
+    q = q.trim();
+    if (!q) { listEl.innerHTML = ''; status.textContent = ''; return; }
+    status.textContent = '검색 중…';
+    try {
+      const places = await fetchPlaceSuggestions(q);
+      if (token !== destToken) return;
+      listEl.innerHTML = '';
+      status.textContent = places.length ? '' : '검색 결과가 없어요. 다른 이름으로 검색해 보세요';
+      places.forEach((p) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'dest-item';
+        const main = document.createElement('div');
+        main.className = 'dest-item-main';
+        const nm = document.createElement('div');
+        nm.className = 'dest-item-name';
+        nm.textContent = p.name;
+        const sub = document.createElement('div');
+        sub.className = 'dest-item-sub';
+        sub.textContent = [p.category, p.address].filter(Boolean).join(' · ');
+        main.appendChild(nm);
+        if (sub.textContent) main.appendChild(sub);
+        b.appendChild(main);
+        if (typeof p.distance === 'number') {
+          const km = document.createElement('div');
+          km.className = 'dest-item-km';
+          km.textContent = p.distance >= 1000 ? (p.distance / 1000).toFixed(1) + 'km' : p.distance + 'm';
+          b.appendChild(km);
+        }
+        b.addEventListener('click', () => pickDest(p));
+        listEl.appendChild(b);
+      });
+    } catch (e) {
+      if (token !== destToken) return;
+      status.textContent = '검색에 실패했어요. 잠시 후 다시 시도해 주세요';
+    }
+  }
+
+  async function pickDest(p) {
+    destPicked = p;
+    destWalkKm = null;
+    $('dest-picked-name').textContent = p.name;
+    $('dest-picked-addr').textContent = p.address || '';
+    $('dest-picked-dist').textContent = '걸어서 거리 계산 중…';
+    $('dest-extra').value = '';
+    $('dest-choice-err').textContent = '';
+    destShowStep('choice');
+    const token = ++destToken;
+    try {
+      let start = lastPos;
+      if (!start) {
+        start = await new Promise((resolve, reject) => navigator.geolocation.getCurrentPosition(
+          (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }), reject, { enableHighAccuracy: true, timeout: 8000 }));
+        lastPos = start;
+      }
+      const r = await RouteEngine.fetchWalkRoute(start, { lat: p.lat, lng: p.lng });
+      if (token !== destToken || destPicked !== p) return;
+      destWalkKm = r.distanceMeters / 1000;
+      $('dest-picked-dist').textContent = `걸어서 약 ${destWalkKm.toFixed(1)}km`;
+      $('dest-extra').placeholder = `${destWalkKm.toFixed(1)}km보다 길게 입력`;
+    } catch (e) {
+      if (token !== destToken || destPicked !== p) return;
+      $('dest-picked-dist').textContent = '거리를 계산하지 못했어요 (경로는 그대로 만들 수 있어요)';
+    }
+  }
+
+  function startDestRoute(withDistance) {
+    if (!destPicked) return;
+    const point = { lat: destPicked.lat, lng: destPicked.lng };
+    if (withDistance) {
+      const km = parseFloat($('dest-extra').value);
+      const err = $('dest-choice-err');
+      if (!(km > 0)) { err.textContent = '거리를 숫자로 입력하거나, 건너뛰기를 눌러주세요'; return; }
+      if (destWalkKm !== null && km <= destWalkKm + 0.2) {
+        err.textContent = `목적지까지 이미 약 ${destWalkKm.toFixed(1)}km예요. 그보다 길게 입력하거나 건너뛰기를 눌러주세요`;
+        return;
+      }
+      prepareRoute({ type: 'destination_with_distance', destination: destPicked.name, destPoint: point, distance: km });
+    } else {
+      prepareRoute({ type: 'destination_only', destination: destPicked.name, destPoint: point });
+    }
+  }
+
+  function setupDestScreen() {
+    $('btn-dest-back').addEventListener('click', () => {
+      const choiceOpen = !$('dest-step-choice').classList.contains('hidden');
+      const distOpen = !$('dest-step-distance').classList.contains('hidden');
+      if (choiceOpen || distOpen) destShowStep('search');
+      else showScreen('screen-setup');
+    });
+    $('dest-input').addEventListener('input', () => {
+      clearTimeout(destTimer);
+      destTimer = setTimeout(() => runDestSearch($('dest-input').value), 300);
+    });
+    $('dest-input').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { clearTimeout(destTimer); runDestSearch($('dest-input').value); $('dest-input').blur(); }
+    });
+    $('btn-dest-skip-place').addEventListener('click', () => { $('dest-dist-err').textContent = ''; destShowStep('distance'); });
+    $('btn-dest-to-search').addEventListener('click', () => destShowStep('search'));
+    $('btn-dest-repick').addEventListener('click', () => destShowStep('search'));
+    $('btn-dest-go').addEventListener('click', () => startDestRoute(true));
+    $('btn-dest-skip-dist').addEventListener('click', () => startDestRoute(false));
+    document.querySelectorAll('#dest-step-distance [data-km]').forEach((b) => {
+      b.addEventListener('click', () => { $('dest-dist-input').value = b.dataset.km; });
+    });
+    $('btn-dest-dist-go').addEventListener('click', () => {
+      const km = parseFloat($('dest-dist-input').value);
+      if (!(km > 0) || km > 60) { $('dest-dist-err').textContent = '0.5 ~ 60 사이의 거리(km)를 입력해주세요'; return; }
+      prepareRoute({ type: 'distance_only', distance: km });
+    });
   }
 
   async function geocode(placeName, center) {
@@ -924,7 +1135,54 @@
     const isRealMovement = lastPos ? movedMeters > noiseFloor : false;
     const isMoving = speed > 0.3 || isRealMovement;
 
-    if (isRealMovement) traveledMeters += movedMeters;
+    // 달린 거리 후보: 바로 앞 GPS 대비가 아니라 "마지막으로 인정한 위치"에서 노이즈 기준 넘게 움직였을 때만 인정.
+    // (러닝 속도에선 1초에 3m쯤 가서 '앞 GPS 대비' 방식은 5m 기준을 못 넘어 거리가 거의 안 쌓였음)
+    const speedKnown = typeof pos.coords.speed === 'number' && !Number.isNaN(pos.coords.speed);
+    const stationary = speedKnown && speed < 0.3;
+    let candDist = 0;
+    if (!distAnchor) distAnchor = cur;
+    const anchorMoved = haversine(distAnchor, cur);
+    if (anchorMoved > noiseFloor && !stationary) {
+      candDist = anchorMoved;
+      distAnchor = cur;
+    } else if (stationary && anchorMoved > noiseFloor * 3) {
+      distAnchor = cur; // 가만히 있는데 GPS만 크게 튄 경우엔 기준점만 옮김
+    }
+
+    // 내 실제 위치를 경로 위에 붙여서(스냅) 진행 위치를 정함 - 그래서 실제로 이동한 만큼 남은 경로선이 줄어듦.
+    // 경로 위에서 달릴 땐 "경로상 진행 거리"를 달린 거리로 써서 GPS 흔들림 때문에 거리가 부풀려지지 않게 함
+    let progress = 0;
+    let addedDist = candDist;
+    if (route && mapHelper && mapHelper.snapToRoute) {
+      const total = mapHelper.totalMeters || route.distanceMeters;
+      const nowMs = Date.now();
+      const gapSec = lastSnapAt ? Math.min((nowMs - lastSnapAt) / 1000, 60) : 1;
+      lastSnapAt = nowMs;
+      const snap = mapHelper.snapToRoute(cur, Math.max(navProgressM - 25, 0), Math.min(navProgressM + 250 + gapSec * 6, total));
+      const tol = Math.max(40, accuracy * 1.2);
+      if (snap && snap.dist <= tol) {
+        const advance = stationary ? 0 : Math.max(snap.along - navProgressM, 0); // 서 있을 땐 GPS가 흔들려도 진행 안 함
+        navProgressM += advance;
+        addedDist = advance;
+        offRouteM = snap.dist;
+        offRouteCount = 0;
+        navPos = snap.dist <= 20 ? snap.point : cur;
+      } else {
+        offRouteCount++;
+        offRouteM = snap ? snap.dist : 999;
+        navPos = cur;
+        // 한동안 계속 경로 밖이면(GPS 오차·공사 우회 등) 진행이 멈춰 보이지 않게 달린 거리만큼은 진행으로 침
+        if (offRouteCount >= 6 && candDist > 0) navProgressM = Math.min(total, navProgressM + candDist);
+        if (offRouteCount >= 3 && offRouteM > 40 && nowMs - lastOffRouteWarnAt > 30000) {
+          lastOffRouteWarnAt = nowMs;
+          announce('경로에서 벗어났어요. 초록 선을 따라 돌아와 주세요.');
+        }
+      }
+      progress = Math.min(navProgressM / total, 1);
+    } else if (route) {
+      progress = Math.min((traveledMeters + candDist) / route.distanceMeters, 1);
+    }
+    traveledMeters += addedDist;
 
     // 멈춰 섰다가 다시 움직인 경우(신호 대기·잠깐 쉬기 등)를 기록 - 러닝 종료 후 "어디서 멈췄는지" 분석에 씀.
     // 정지 중엔 GPS 값이 안 올 수도 있어서, "다시 움직인 순간의 시간 공백"으로 판단함
@@ -977,11 +1235,10 @@
       lastSplitPos = { lat: cur.lat, lng: cur.lng };
     }
 
-    const progress = route ? Math.min(traveledMeters / route.distanceMeters, 1) : 0;
     updateMarker(progress, currentBearing, isMoving);
     if (arModeEnabled) {
       if (arUsingXr) ArXR.updatePath(getLookaheadPathPoints());
-      else updateArOverlay(cur, currentBearing);
+      else updateArOverlay(navPos || cur, currentBearing);
     }
     updateStats(progress, speed);
     refreshGoalHeader();
@@ -1484,9 +1741,11 @@
   // pos: 진행률로 계산한 좌표, bearing: 화면 위쪽이 향해야 할 방향, isMoving: false면 카메라를 그대로 둠(정지)
   function updateMarker(progress, bearing, isMoving) {
     if (!mapHelper) return;
-    const pos = mapHelper.pointAtProgress(progress);
+    const pos = navPos || mapHelper.pointAtProgress(progress);
     const face = localStorage.getItem(FACE_KEY);
     mapHelper.updateChevrons(progress, mapHelper.map);
+    // 지나온 길은 흐리게, 남은 길만 초록으로 (경로에서 벗어났으면 내 위치에서 경로로 돌아오는 선도 함께)
+    if (mapHelper.updateRoute) mapHelper.updateRoute(progress, offRouteM > 25 ? navPos : null);
 
     if (!faceMarkerObj) {
       const el = document.createElement('div');
@@ -1597,7 +1856,8 @@
     const FAR = 110;
     const STEP = 2;
     const distances = [];
-    for (let d = NEAR; d <= FAR; d += STEP) distances.push(traveledMeters + d);
+    const base = (mapHelper && mapHelper.snapToRoute) ? navProgressM : traveledMeters; // 실제 위치를 붙인 경로상 거리
+    for (let d = NEAR; d <= FAR; d += STEP) distances.push(base + d);
     return pointsAlongRoute(route.points, distances);
   }
 
@@ -2621,12 +2881,11 @@
     });
     $('btn-setup-manual').addEventListener('click', () => {
       requestCompassPermission();
-      const destination = prompt('목적지 (없으면 비워두기)') || null;
-      const distance = parseFloat(prompt('거리(km)')) || null;
-      if (destination && distance) prepareRoute({ type: 'destination_with_distance', destination, distance });
-      else if (distance) prepareRoute({ type: 'distance_only', distance });
-      else if (destination) prepareRoute({ type: 'destination_only', destination });
+      openDestScreen();
     });
+    setupDestScreen();
+    $('xw-minus').addEventListener('click', () => changeXw(-1));
+    $('xw-plus').addEventListener('click', () => changeXw(1));
 
     $('btn-start-run').addEventListener('click', () => {
       $('btn-start-run').classList.add('hidden');

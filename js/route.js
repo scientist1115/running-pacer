@@ -52,31 +52,118 @@ const RouteEngine = (() => {
     return { points: data.points || [], ok: true };
   }
 
-  // 특정 경로(points)의 좌표 범위(±0.002도, 대략 200m) 안에 들어오는 횡단보도 개수를 셈
-  function countPointsNearPath(crosswalkPoints, routePoints, pad = 0.002) {
-    const lats = routePoints.map((p) => p.lat), lngs = routePoints.map((p) => p.lng);
-    const minLat = Math.min(...lats) - pad, maxLat = Math.max(...lats) + pad;
-    const minLng = Math.min(...lngs) - pad, maxLng = Math.max(...lngs) + pad;
-    let n = 0;
-    for (const p of crosswalkPoints) {
-      if (p.lat >= minLat && p.lat <= maxLat && p.lng >= minLng && p.lng <= maxLng) n++;
+  /* ================= 횡단보도(신호등) 세기 =================
+   * 세 가지 자료를 합쳐서 "이 경로가 실제로 건너는 횟수"를 셈:
+   *  1) 티맵 경로가 직접 알려주는 횡단보도 (경로 계산 결과 - 가장 정확하고 항상 있음)
+   *  2) 지자체 횡단보도 자료 + OpenStreetMap (티맵이 놓친 곳 보완)
+   * 예전에는 경로가 들어 있는 "네모난 범위" 안의 횡단보도를 전부 셌는데(경로에서 멀리 떨어진 것도 포함),
+   * 이제는 경로선에서 18m 안에 있는 것만, 지나가는 순서대로 하나씩 셈. 갔다가 되돌아오는 코스는 두 번 건너니까 두 번으로 셈.
+   */
+  const CROSS_RADIUS_M = 18;  // 경로에서 이 거리 안의 횡단보도만 "건너는 것"으로 봄
+  const DATA_MERGE_M = 15;    // 같은 횡단보도를 가리키는 여러 점(양끝·중심 등)을 하나로 묶는 거리
+  const TMAP_MATCH_M = 20;    // 티맵이 알려준 횡단보도와 이 거리 안이면 같은 횡단보도로 봄
+
+  // 경로를 stepM 간격의 점들로 쪼개고, 각 점에 시작부터의 거리 s(m)를 붙임
+  function densifyRoute(points, stepM = 5) {
+    const out = [];
+    if (!points.length) return out;
+    let s = 0;
+    out.push({ lat: points[0].lat, lng: points[0].lng, s });
+    for (let i = 1; i < points.length; i++) {
+      const a = points[i - 1];
+      const b = points[i];
+      const d = haversineMeters(a, b);
+      const n = Math.max(1, Math.round(d / stepM));
+      for (let k = 1; k <= n; k++) {
+        const t = k / n;
+        out.push({ lat: a.lat + (b.lat - a.lat) * t, lng: a.lng + (b.lng - a.lng) * t, s: s + d * t });
+      }
+      s += d;
     }
-    return n;
+    return out;
   }
 
-  // 경로 하나만 확인할 때 쓰는 간단 버전 (후보가 하나뿐인 직선 경로 등) - 실패와 "진짜 0개"를 구분해서 반환
-  async function countCrosswalksNear(routePoints) {
+  // 횡단보도 지점들(pts) 근처를 경로가 지나가는 "사건"의 위치(경로상 거리 s)들을 돌려줌.
+  // 같은 지점을 두 번 지나가면(왕복) 두 번으로 셈. mergeM > 0이면 그보다 가까운 사건끼리는 하나로 묶음.
+  function crossingEvents(samples, pts, radius, mergeM) {
+    if (!samples.length || !pts || !pts.length) return [];
+    const mx = 111320 * Math.cos((samples[0].lat * Math.PI) / 180);
+    const my = 110540;
+    const cell = radius * 2;
+    const grid = new Map();
+    samples.forEach((p, i) => {
+      const key = `${Math.floor((p.lng * mx) / cell)}_${Math.floor((p.lat * my) / cell)}`;
+      if (!grid.has(key)) grid.set(key, []);
+      grid.get(key).push(i);
+    });
+    const events = [];
+    for (const c of pts) {
+      const cx = c.lng * mx;
+      const cy = c.lat * my;
+      const gx = Math.floor(cx / cell);
+      const gy = Math.floor(cy / cell);
+      const hits = [];
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          const list = grid.get(`${gx + dx}_${gy + dy}`);
+          if (!list) continue;
+          for (const i of list) {
+            const ex = samples[i].lng * mx - cx;
+            const ey = samples[i].lat * my - cy;
+            if (ex * ex + ey * ey <= radius * radius) hits.push(i);
+          }
+        }
+      }
+      if (!hits.length) continue;
+      hits.sort((p, q) => p - q);
+      let runStart = hits[0];
+      let prev = hits[0];
+      for (let k = 1; k < hits.length; k++) {
+        if (hits[k] - prev > 6) { // 30m 넘게 떨어져서 다시 만나면 다른 번(왕복의 되돌아오는 길 등)
+          events.push((samples[runStart].s + samples[prev].s) / 2);
+          runStart = hits[k];
+        }
+        prev = hits[k];
+      }
+      events.push((samples[runStart].s + samples[prev].s) / 2);
+    }
+    events.sort((p, q) => p - q);
+    if (!mergeM) return events;
+    const merged = [];
+    for (const e of events) {
+      const last = merged[merged.length - 1];
+      if (last && e - last.last <= mergeM) last.last = e;
+      else merged.push({ first: e, last: e });
+    }
+    return merged.map((m) => (m.first + m.last) / 2);
+  }
+
+  // 후보 경로 하나의 횡단보도 횟수 계산: 티맵이 알려준 것 + 자료에만 있는 것(티맵과 겹치지 않는 것)
+  function annotateCrossings(cand, dataPoints, dataOk) {
+    const samples = densifyRoute(cand.points, 5);
+    const tm = crossingEvents(samples, cand.crosswalks || [], CROSS_RADIUS_M, 0);
+    let extra = 0;
+    if (dataOk && dataPoints.length) {
+      const dv = crossingEvents(samples, dataPoints, CROSS_RADIUS_M, DATA_MERGE_M);
+      extra = dv.filter((s) => !tm.some((t) => Math.abs(t - s) <= TMAP_MATCH_M)).length;
+    }
+    return { crosswalkCount: tm.length + extra, crosswalkTmap: tm.length, crosswalkDataOk: dataOk };
+  }
+
+  // 경로 하나만 확인할 때 쓰는 간단 버전 - count: 횟수, ok: 지도 자료 조회 성공 여부(실패해도 티맵 기준 횟수는 있음)
+  async function countCrosswalksNear(routePoints, tmapCrosswalks) {
     try {
       const lats = routePoints.map((p) => p.lat), lngs = routePoints.map((p) => p.lng);
       const { points, ok } = await fetchCrosswalkPointsInBox(
         Math.min(...lats) - 0.002, Math.max(...lats) + 0.002,
         Math.min(...lngs) - 0.002, Math.max(...lngs) + 0.002,
       );
-      if (!ok) return { count: 0, ok: false };
-      return { count: countPointsNearPath(points, routePoints), ok: true };
+      const a = annotateCrossings({ points: routePoints, crosswalks: tmapCrosswalks || [] }, points, ok);
+      return { count: a.crosswalkCount, ok, tmap: a.crosswalkTmap };
     } catch (e) {
       console.warn('횡단보도 계산 실패:', e.message);
-      return { count: 0, ok: false };
+      const a = annotateCrossings({ points: routePoints, crosswalks: tmapCrosswalks || [] }, [], false);
+      return { count: a.crosswalkCount, ok: false, tmap: a.crosswalkTmap };
     }
   }
 
@@ -96,71 +183,190 @@ const RouteEngine = (() => {
     }
   }
 
-  // 후보 경로 여러 개 중 횡단보도+나쁜 노면이 가장 적은 순으로 점수 매겨 정렬해서 전부 반환
-  // (전부 병렬로 채점) - [0]이 가장 좋은 경로, 나머지는 "신호등 몇 개까지 괜찮아요?" 선택용 대안.
-  // 횡단보도는 후보마다 따로 조회하지 않고, 전체 후보를 합친 범위로 한 번만 조회해서
-  // (그래야 무료 공개 Overpass 서버의 요청 제한에 안 걸림) 후보별 개수는 그 결과에서 로컬로 계산함
-  async function pickBestRoute(candidates) {
+  // 후보 경로들을 횡단보도+나쁜 노면 점수로 채점해서 좋은 순으로 정렬해 반환.
+  // 지도 자료(정부+OSM)는 후보마다 따로 조회하지 않고 전체를 합친 범위로 한 번만 조회함
+  // (그래야 무료 공개 Overpass 서버의 요청 제한에 안 걸림). opts.skipSurface: 노면 검사 생략(후보가 하나뿐일 때)
+  async function pickBestRoute(candidates, opts = {}) {
     const allPoints = candidates.flatMap((c) => c.points);
     const lats = allPoints.map((p) => p.lat), lngs = allPoints.map((p) => p.lng);
     const [crosswalkResult, badSurfaceCounts] = await Promise.all([
       fetchCrosswalkPointsInBox(
         Math.min(...lats) - 0.003, Math.max(...lats) + 0.003,
         Math.min(...lngs) - 0.003, Math.max(...lngs) + 0.003,
-      ),
-      Promise.all(candidates.map((c) => countBadSurfaceNear(c.points))),
+      ).catch(() => ({ points: [], ok: false })),
+      opts.skipSurface ? Promise.resolve(candidates.map(() => 0)) : Promise.all(candidates.map((c) => countBadSurfaceNear(c.points))),
     ]);
 
     const scored = candidates.map((c, i) => {
-      const crosswalkCount = crosswalkResult.ok ? countPointsNearPath(crosswalkResult.points, c.points) : 0;
+      const a = annotateCrossings(c, crosswalkResult.points, crosswalkResult.ok);
       // 방향 추정(bearing) 기반 후보는 실제 검증된 장소가 아니라 임의로 잡은 지점이라,
       // 산길/외곽처럼 엉뚱한 곳으로 뻗을 수 있음. 공원 후보보다 약한 페널티를 줘서
       // 점수가 비슷하면 공원 쪽을 우선하도록 함 (그래도 크게 나으면 여전히 bearing 쪽이 이김)
       const sourcePenalty = c.source === 'bearing' ? 1 : 0;
-      return {
-        ...c,
-        crosswalkCount,
-        crosswalkDataOk: crosswalkResult.ok,
-        score: crosswalkCount * 2 + badSurfaceCounts[i] + sourcePenalty,
-      };
+      return { ...c, ...a, score: a.crosswalkCount * 2 + badSurfaceCounts[i] + sourcePenalty };
     });
     scored.sort((a, b) => a.score - b.score);
     return scored;
   }
 
+  /* ================= 경로 후보 풀 + "신호등 N개로 다시 찾기" =================
+   * 경로를 만들 때 만든 후보들을 ctx.pool에 모아 두고, 사용자가 신호등 개수를 바꾸면
+   * 풀에서 그 개수에 가장 가까운 경로를 바로 고름. 풀에 없으면 후보를 더 넓게 만들어서(한 번만) 다시 고름.
+   */
+  function pickByCount(ctx, want) {
+    const valid = ctx.pool.filter((c) => ctx.isValid(c));
+    const list = valid.length ? valid : ctx.pool;
+    const key = (c) => [
+      Math.abs(c.crosswalkCount - want),            // 원하는 개수에 가장 가까운 것
+      c.crosswalkCount > want ? 1 : 0,              // 같은 차이면 더 적은 쪽
+      Math.abs(c.distanceMeters - ctx.targetMeters), // 그다음 목표 거리에 가까운 것
+      c.score,
+    ];
+    return list.slice().sort((a, b) => {
+      const ka = key(a), kb = key(b);
+      for (let i = 0; i < ka.length; i++) if (ka[i] !== kb[i]) return ka[i] - kb[i];
+      return 0;
+    })[0];
+  }
+
+  function withCtx(best, ctx) {
+    return { ...best, ctx, routeOptions: ctx.pool };
+  }
+
+  // 왕복(갔던 길 그대로 되돌아오기) 후보 하나
+  async function outAndBack(start, turn) {
+    const out = await fetchWalkRoute(start, { lat: turn.lat, lng: turn.lng });
+    const backPoints = [...out.points].reverse();
+    return {
+      points: [...out.points, ...backPoints],
+      distanceMeters: out.distanceMeters * 2,
+      turns: out.turns || [], // 복귀 구간은 반대 방향이라 회전 안내는 갈 때 것만 사용
+      crosswalks: out.crosswalks || [], // 되돌아올 때도 같은 곳을 지나므로 세는 쪽에서 2번으로 셈
+      via: turn.name,
+      source: turn.source,
+    };
+  }
+
+  // A -> via -> B 두 구간을 이은 후보 하나
+  async function viaRoute(a, via, b, name) {
+    const [leg1, leg2] = await Promise.all([fetchWalkRoute(a, via), fetchWalkRoute(via, b)]);
+    return {
+      points: [...leg1.points, ...leg2.points],
+      distanceMeters: leg1.distanceMeters + leg2.distanceMeters,
+      turns: [...(leg1.turns || []), ...(leg2.turns || [])],
+      crosswalks: [...(leg1.crosswalks || []), ...(leg2.crosswalks || [])],
+      via: name,
+    };
+  }
+
+  // 목표 거리를 채우도록 경유지를 잡음: 출발→경유→도착 걷는 거리가 목표쯤 되는 지점을 이분탐색으로 찾음
+  function viaForTarget(start, dest, targetM, bearing) {
+    let lo = 0;
+    let hi = targetM / 1.3;
+    for (let i = 0; i < 16; i++) {
+      const mid = (lo + hi) / 2;
+      const v = destinationPoint(start, bearing, mid);
+      const len = 1.3 * (mid + haversineMeters(v, dest)); // 실제 도로는 직선보다 30% 정도 더 김
+      if (len < targetM) lo = mid; else hi = mid;
+    }
+    return destinationPoint(start, bearing, (lo + hi) / 2);
+  }
+
+  // 풀에 원하는 개수가 없을 때 후보를 넓혀서 더 만듦 (방향/거리를 더 다양하게)
+  async function expandPool(ctx) {
+    let raw = [];
+    if (ctx.mode === 'loop') {
+      const half = ctx.targetMeters / 2;
+      const specs = [30, 90, 150, 210, 270, 330].map((b) => [b, 0.72]).concat([15, 75, 135, 195, 255, 315].map((b) => [b, 0.85]));
+      raw = await Promise.all(specs.map(([b, f], i) => {
+        const pt = destinationPoint(ctx.start, b, half * f);
+        return outAndBack(ctx.start, { lat: pt.lat, lng: pt.lng, name: `${ctx.targetKm}km 코스 추가${i + 1}`, source: 'bearing' }).catch(() => null);
+      }));
+    } else if (ctx.targetMeters && ctx.mode === 'destTarget') {
+      raw = await Promise.all([0, 60, 120, 180, 240, 300].map((b, i) => {
+        const v = viaForTarget(ctx.start, ctx.dest, ctx.targetMeters, b);
+        return viaRoute(ctx.start, v, ctx.dest, `경유 ${i + 1}`).catch(() => null);
+      }));
+    } else {
+      // 목적지만: 최단 경로에서 옆으로 살짝 비켜난 경유지로 돌아가는 후보들
+      const d = haversineMeters(ctx.start, ctx.dest);
+      const brg = computeBearing(ctx.start, ctx.dest);
+      const mid = destinationPoint(ctx.start, brg, d / 2);
+      const offs = [[-90, 0.22], [90, 0.22], [-90, 0.4], [90, 0.4]];
+      raw = await Promise.all(offs.map(([side, f], i) => {
+        const v = destinationPoint(mid, (brg + side + 360) % 360, d * f);
+        return viaRoute(ctx.start, v, ctx.dest, `우회 ${i + 1}`).catch(() => null);
+      }));
+    }
+    const cands = raw.filter(Boolean);
+    if (!cands.length) return [];
+    return pickBestRoute(cands);
+  }
+
+  // 사용자가 신호등 개수를 want로 바꿨을 때: 그 개수에 가장 가까운 경로를 골라 반환.
+  // exact: 정확히 그 개수인 경로를 찾았는지
+  async function refindRoute(base, want) {
+    const ctx = base.ctx;
+    if (!ctx) return { ...base, exact: base.crosswalkCount === want };
+    let best = pickByCount(ctx, want);
+    if (best.crosswalkCount !== want && !ctx.expanded) {
+      ctx.expanded = true;
+      const more = await expandPool(ctx).catch(() => []);
+      if (more.length) {
+        ctx.pool = ctx.pool.concat(more);
+        best = pickByCount(ctx, want);
+      }
+    }
+    return { ...withCtx(best, ctx), exact: best.crosswalkCount === want };
+  }
+
+  // 목적지만 (거리 지정 없음): 최단 경로를 기본으로, 신호등 수를 바꾸면 우회 후보를 찾음
+  async function buildDestinationRoute(start, dest) {
+    const direct = await fetchWalkRoute(start, dest);
+    const scored = await pickBestRoute([direct], { skipSurface: true });
+    const ctx = {
+      mode: 'destOnly', start, dest, targetKm: null, targetMeters: direct.distanceMeters, pool: scored, expanded: false,
+      isValid: (c) => c.distanceMeters <= direct.distanceMeters * 1.7 + 300,
+    };
+    return withCtx(scored[0], ctx);
+  }
+
   // 목적지 + 목표거리: 직선 경로가 짧으면 근처 공원 후보 몇 곳을 경유하는 경로를 만들어서
   // 그중 횡단보도/나쁜 노면이 가장 적은 경로를 고름. 이미 충분히 길면 최단경로 그대로.
   async function buildRouteToDestination(start, dest, targetKm) {
+    const targetMeters = targetKm * 1000;
+    const ctxBase = {
+      mode: 'destTarget', start, dest, targetKm, targetMeters, expanded: false,
+      isValid: (c) => c.distanceMeters >= targetMeters - 300 && c.distanceMeters <= targetMeters * 1.35 + 300,
+    };
     const direct = await fetchWalkRoute(start, dest);
     if (direct.distanceMeters / 1000 >= targetKm - 0.3) {
-      return direct;
+      const scored = await pickBestRoute([direct], { skipSurface: true });
+      return withCtx(scored[0], { ...ctxBase, pool: scored });
     }
     const parks = await searchNearby('공원', start).catch(() => []);
-    if (parks.length === 0) return direct;
-
-    const results = await Promise.all(parks.slice(0, 4).map(async (via) => {
-      try {
-        const [leg1, leg2] = await Promise.all([
-          fetchWalkRoute(start, { lat: via.lat, lng: via.lng }),
-          fetchWalkRoute({ lat: via.lat, lng: via.lng }, dest),
-        ]);
-        return {
-          points: [...leg1.points, ...leg2.points],
-          distanceMeters: leg1.distanceMeters + leg2.distanceMeters,
-          turns: [...(leg1.turns || []), ...(leg2.turns || [])],
-          via: via.name,
-        };
-      } catch {
-        return null;
-      }
-    }));
-    const candidates = results.filter(Boolean);
-    if (candidates.length === 0) return direct;
-
+    let candidates = [];
+    if (parks.length) {
+      const results = await Promise.all(parks.slice(0, 4).map((via) =>
+        viaRoute(start, { lat: via.lat, lng: via.lng }, dest, via.name).catch(() => null)));
+      candidates = results.filter(Boolean);
+    }
+    if (candidates.length === 0) {
+      // 공원 후보가 없으면 목표 거리에 맞춘 경유지로 직접 만들어 봄
+      const results = await Promise.all([0, 90, 180, 270].map((b, i) => {
+        const v = viaForTarget(start, dest, targetMeters, b);
+        return viaRoute(start, v, dest, `경유 ${i + 1}`).catch(() => null);
+      }));
+      candidates = results.filter(Boolean);
+    }
+    if (candidates.length === 0) {
+      const scored = await pickBestRoute([direct], { skipSurface: true });
+      return withCtx(scored[0], { ...ctxBase, pool: scored });
+    }
     // 목표거리를 채우는 후보들 중에서 고르고, 하나도 없으면 그나마 가장 긴 걸로
     const qualifying = candidates.filter((c) => c.distanceMeters / 1000 >= targetKm - 0.3);
     const scored = await pickBestRoute(qualifying.length ? qualifying : candidates);
-    return { ...scored[0], routeOptions: scored };
+    return withCtx(scored[0], { ...ctxBase, pool: scored });
   }
 
   // 목적지 없이 거리만: 근처 공원 몇 곳 + 시작점 기준 6방향으로 목표거리 절반만큼 떨어진 가상 지점들을
@@ -183,32 +389,23 @@ const RouteEngine = (() => {
     const allTurnarounds = [...parkTurnarounds, ...bearingTurnarounds];
     if (allTurnarounds.length === 0) throw new Error('근처에 추천할 만한 경로를 못 찾았어요');
 
-    const results = await Promise.all(allTurnarounds.map(async (turnaround) => {
-      try {
-        const out = await fetchWalkRoute(start, { lat: turnaround.lat, lng: turnaround.lng });
-        const backPoints = [...out.points].reverse(); // 왕복이니 갔던 길 그대로 되돌아옴
-        return {
-          points: [...out.points, ...backPoints],
-          distanceMeters: out.distanceMeters * 2,
-          turns: out.turns || [], // 복귀 구간은 반대 방향이라 회전 안내는 갈 때 것만 사용
-          via: turnaround.name,
-          source: turnaround.source,
-        };
-      } catch {
-        return null;
-      }
-    }));
+    const results = await Promise.all(allTurnarounds.map((t) => outAndBack(start, t).catch(() => null)));
     const candidates = results.filter(Boolean);
     if (candidates.length === 0) throw new Error('경로를 만들 수 없었어요');
 
-    // 목표거리(±20%)에 맞는 후보들 중에서 고르고, 없으면 거리가 제일 가까운 걸로
-    const qualifying = candidates.filter((c) => Math.abs(c.distanceMeters / 1000 - targetKm) <= targetKm * 0.25);
+    const ctxBase = {
+      mode: 'loop', start, targetKm, targetMeters: targetKm * 1000, expanded: false,
+      isValid: (c) => Math.abs(c.distanceMeters / 1000 - targetKm) <= targetKm * 0.25,
+    };
+    // 목표거리(±25%)에 맞는 후보들 중에서 고르고, 없으면 거리가 제일 가까운 걸로
+    const qualifying = candidates.filter((c) => ctxBase.isValid(c));
     if (qualifying.length) {
       const scored = await pickBestRoute(qualifying);
-      return { ...scored[0], routeOptions: scored };
+      return withCtx(scored[0], { ...ctxBase, pool: scored });
     }
-    candidates.sort((a, b) => Math.abs(a.distanceMeters / 1000 - targetKm) - Math.abs(b.distanceMeters / 1000 - targetKm));
-    return candidates[0];
+    const scoredAll = await pickBestRoute(candidates);
+    const closest = scoredAll.slice().sort((a, b) => Math.abs(a.distanceMeters - ctxBase.targetMeters) - Math.abs(b.distanceMeters - ctxBase.targetMeters))[0];
+    return withCtx(closest, { ...ctxBase, pool: scoredAll });
   }
 
   // 두 좌표 사이 직선 거리(m)
@@ -473,7 +670,7 @@ const RouteEngine = (() => {
   }
 
   return {
-    fetchWalkRoute, searchNearby, pickBestRoute, buildRouteToDestination, buildLoopRoute,
+    fetchWalkRoute, searchNearby, pickBestRoute, buildRouteToDestination, buildLoopRoute, buildDestinationRoute, refindRoute,
     renderOnMap, haversineMeters, computeBearing, destinationPoint, countCrosswalksNear,
   };
 })();
