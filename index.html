@@ -197,7 +197,54 @@
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
       말로 설정하기
     </button>
-    <button id="btn-setup-manual" class="btn-secondary">직접 입력하기</button>
+    <button id="btn-setup-manual" class="btn-secondary">목적지 검색해서 정하기</button>
+  </section>
+
+  <!-- 2-0. 목적지 검색: 카카오 장소 검색 자동완성으로 고르고, 거리는 선택 -->
+  <section id="screen-dest" class="screen">
+    <div class="setup-header-row">
+      <button id="btn-dest-back" class="btn-icon" type="button" title="뒤로">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      </button>
+      <p class="onboard-title" style="margin:0; font-size:22px;">어디로 갈까요?</p>
+      <span style="width:40px"></span>
+    </div>
+
+    <div id="dest-step-search">
+      <p class="onboard-sub" style="margin-top:12px;">장소 이름을 입력하면 관련 장소가 바로 나와요.<br/>목록에서 직접 골라주세요.</p>
+      <input type="text" id="dest-input" class="dest-input" placeholder="예) 과천중앙공원, 정부과천청사역" autocomplete="off" enterkeyhint="search" />
+      <div id="dest-status" class="dest-status"></div>
+      <div id="dest-list" class="dest-list"></div>
+      <button id="btn-dest-skip-place" class="btn-secondary" type="button">건너뛰기 · 목적지 없이 거리만 입력</button>
+    </div>
+
+    <div id="dest-step-choice" class="hidden">
+      <div class="dest-picked">
+        <div id="dest-picked-name" class="dest-picked-name"></div>
+        <div id="dest-picked-addr" class="dest-picked-addr"></div>
+        <div id="dest-picked-dist" class="dest-picked-dist">걸어서 거리 계산 중…</div>
+      </div>
+      <label class="dest-label" for="dest-extra">더 멀리 달리고 싶으면 총 거리(km)를 입력하세요 <span class="dest-opt">(선택)</span></label>
+      <input type="number" id="dest-extra" class="dest-input" inputmode="decimal" min="0.5" step="0.1" placeholder="목적지까지보다 길게 입력" />
+      <div id="dest-choice-err" class="dest-err"></div>
+      <button id="btn-dest-go" class="btn-primary" type="button">이 목적지로 경로 만들기</button>
+      <button id="btn-dest-skip-dist" class="btn-secondary" type="button">건너뛰기 · 목적지까지 바로 가기</button>
+      <button id="btn-dest-repick" class="btn-secondary" type="button">다른 목적지 고르기</button>
+    </div>
+
+    <div id="dest-step-distance" class="hidden">
+      <p class="onboard-sub" style="margin-top:12px;">목적지 없이, 지금 위치에서 출발해 돌아오는 코스를 만들어요.</p>
+      <input type="number" id="dest-dist-input" class="dest-input" inputmode="decimal" min="0.5" step="0.1" placeholder="달릴 거리(km)" />
+      <div class="dest-quick">
+        <button type="button" class="crosswalk-chip" data-km="3">3km</button>
+        <button type="button" class="crosswalk-chip" data-km="5">5km</button>
+        <button type="button" class="crosswalk-chip" data-km="7">7km</button>
+        <button type="button" class="crosswalk-chip" data-km="10">10km</button>
+      </div>
+      <div id="dest-dist-err" class="dest-err"></div>
+      <button id="btn-dest-dist-go" class="btn-primary" type="button">경로 만들기</button>
+      <button id="btn-dest-to-search" class="btn-secondary" type="button">목적지 입력하러 가기</button>
+    </div>
   </section>
 
   <!-- 2-1. 마이페이지: 사진 변경 / 목표거리 수정 / 노래 관리 -->
@@ -300,11 +347,18 @@
         <span id="turn-desc">-</span>
       </div>
       <div id="crosswalk-selector" class="hidden">
-        <div class="crosswalk-selector-label">신호등이 불편하면 골라보세요</div>
-        <div id="crosswalk-selector-chips" class="crosswalk-selector-chips"></div>
-        <div class="crosswalk-selector-hint">개수를 줄이면 목적지 대신 근처를 빙 도는 경로가 나올 수 있어요</div>
+        <div class="xw-row">
+          <div class="xw-title">횡단보도(신호등) 개수</div>
+          <div class="xw-stepper">
+            <button id="xw-minus" type="button" aria-label="개수 줄이기">−</button>
+            <span id="xw-count" aria-live="polite">0</span>
+            <button id="xw-plus" type="button" aria-label="개수 늘리기">+</button>
+          </div>
+        </div>
+        <div id="xw-status" class="crosswalk-selector-hint"></div>
+        <div id="xw-warn" class="xw-warn hidden"></div>
       </div>
-      <button id="btn-start-run" class="cta-card hidden" type="button" style="position:absolute; left:16px; right:16px; bottom:16px; margin:0; z-index:700;">
+      <button id="btn-start-run" class="cta-card hidden" type="button" style="width:auto; position:absolute; left:16px; right:16px; bottom:16px; margin:0; z-index:700;">
         <span class="cta-icon"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg></span>
         <span>
           <div class="cta-title">러닝 시작하기</div>
@@ -341,7 +395,7 @@
         </div>
       </div>
     </div>
-    <button id="btn-end-run" class="btn-secondary" style="margin: 10px 16px 16px;">
+    <button id="btn-end-run" class="btn-secondary" style="width:auto; margin: 10px 16px 16px;">
       <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
       러닝 종료하기
     </button>
