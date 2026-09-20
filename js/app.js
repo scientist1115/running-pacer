@@ -4,6 +4,23 @@
   const COMEDY_KEY = 'run-pacer-comedy-mode';
   const VOICE_KEY = 'run-pacer-voice-key';
   const ARROW_MODE_KEY = 'run-pacer-arrow-mode'; // 'map' | 'ar'
+  const NICKNAME_KEY = 'run-pacer-leaderboard-nickname';
+  const NICK_ADJ = ['번개', '질풍', '폭풍', '무적', '씩씩한', '날쌘', '용감한', '유쾌한', '신비한', '화끈한', '조용한', '엉뚱한'];
+  const NICK_NOUN = ['치타', '표범', '여우', '독수리', '다람쥐', '늑대', '호랑이', '사자', '토끼', '매', '거북이', '두더지'];
+  function generateRandomNickname() {
+    const adj = NICK_ADJ[Math.floor(Math.random() * NICK_ADJ.length)];
+    const noun = NICK_NOUN[Math.floor(Math.random() * NICK_NOUN.length)];
+    const num = Math.floor(Math.random() * 90) + 10;
+    return `${adj}${noun}${num}`;
+  }
+  function getOrCreateNickname() {
+    let nick = localStorage.getItem(NICKNAME_KEY);
+    if (!nick) {
+      nick = generateRandomNickname();
+      localStorage.setItem(NICKNAME_KEY, nick);
+    }
+    return nick;
+  }
   let arModeEnabled = false;
   let arStream = null;
   let arCtx = null;
@@ -123,6 +140,7 @@
     $('profile-face-preview').src = face || '';
     $('profile-goal-input').value = cachedProfile?.goalKm || '';
     $('profile-comedy-toggle').checked = localStorage.getItem(COMEDY_KEY) === '1';
+    $('profile-nickname-display').textContent = getOrCreateNickname();
     renderVoiceChips();
     renderArrowModeChips();
     if (currentUser) {
@@ -501,8 +519,7 @@
         paceMinPerKm,
       }).then(() => Auth.isPublished(currentUser.uid)).then((pub) => {
         if (!pub) return;
-        const displayName = cachedProfile?.username || cachedProfile?.name || '러너';
-        return Auth.publishLeaderboard(currentUser.uid, displayName);
+        return Auth.publishLeaderboard(currentUser.uid, getOrCreateNickname());
       }).catch(console.warn);
     }
 
@@ -1043,6 +1060,7 @@
   async function loadHomeScreen() {
     if (!currentUser) return;
     renderHomeHero();
+    renderRunnerCharacter();
     try {
       const runs = await Auth.listRuns(currentUser.uid, 20);
       renderHomeMap(runs);
@@ -1108,6 +1126,63 @@
     $('home-goal-num').innerHTML = `${doneKm.toFixed(1)}<span>/ ${goalKm}km</span>`;
     $('home-goal-pct').textContent = `${pct}%`;
     $('home-goal-bar').style.width = `${pct}%`;
+  }
+
+  // 누적 거리에 따라 5단계로 커지는 러닝 캐릭터 - 근육(굵기)과 키(비율)가 단계별로 커짐
+  const CHAR_LEVELS = [
+    { min: 0, name: '새싹 러너', color: '#8BD9A8',
+      quotes: ['처음이 제일 어려워요. 오늘도 나왔다는 게 벌써 대단해요!', '한 걸음씩, 천천히 시작해봐요.'] },
+    { min: 5, name: '초보 러너', color: '#5FD98C',
+      quotes: ['조금씩 몸이 적응하고 있어요. 이 페이스 그대로!', '벌써 5km 넘게 뛰었어요. 몸이 기억할 거예요.'] },
+    { min: 20, name: '성장하는 러너', color: '#2BD97C',
+      quotes: ['벌써 20km 넘게 뛰었어요. 다리에 힘이 붙는 게 느껴지죠?', '꾸준함이 실력이 되고 있어요.'] },
+    { min: 50, name: '다부진 러너', color: '#16C46E',
+      quotes: ['50km 클럽 가입! 이제 진짜 러너 몸이 되어가고 있어요.', '근육이 붙는 게 눈에 보여요, 계속 가봐요.'] },
+    { min: 100, name: '레전드 러너', color: '#0FAE5F',
+      quotes: ['100km 이상! 동네에서 소문난 러너 아닐까요?', '여기까지 온 당신, 이미 레전드예요.'] },
+  ];
+
+  function getCharacterLevel(distanceKm) {
+    let level = CHAR_LEVELS[0];
+    let idx = 0;
+    CHAR_LEVELS.forEach((l, i) => { if (distanceKm >= l.min) { level = l; idx = i; } });
+    return { ...level, idx };
+  }
+
+  function renderRunnerCharacter() {
+    const box = $('runner-character-box');
+    if (!box) return;
+    const distanceKm = cachedProfile?.distanceRunKm || 0;
+    const level = getCharacterLevel(distanceKm);
+    const muscle = 1 + level.idx * 0.18;   // 레벨이 올라갈수록 팔다리가 굵어짐(근육)
+    const heightScale = 1 + level.idx * 0.05; // 레벨이 올라갈수록 키가 살짝 커짐
+    const legW = (10 * muscle).toFixed(1);
+    const armW = (7 * muscle).toFixed(1);
+    const torsoW = (32 * muscle).toFixed(1);
+    const quote = level.quotes[Math.floor(Math.random() * level.quotes.length)];
+
+    box.innerHTML = `
+      <svg viewBox="0 0 200 200" width="110" height="110" style="transform: scaleY(${heightScale}); transform-origin: bottom center;">
+        <g class="runner-bob">
+          <g class="runner-leg-back" style="transform-origin:100px 118px;">
+            <rect x="${(100 - legW / 2).toFixed(1)}" y="118" width="${legW}" height="55" rx="${legW / 2}" fill="${level.color}"/>
+          </g>
+          <g class="runner-leg-front" style="transform-origin:100px 118px;">
+            <rect x="${(100 - legW / 2).toFixed(1)}" y="118" width="${legW}" height="55" rx="${legW / 2}" fill="${level.color}"/>
+          </g>
+          <rect x="${(100 - torsoW / 2).toFixed(1)}" y="60" width="${torsoW}" height="60" rx="16" fill="${level.color}"/>
+          <g class="runner-arm-back" style="transform-origin:100px 68px;">
+            <rect x="${(100 - armW / 2).toFixed(1)}" y="68" width="${armW}" height="45" rx="${armW / 2}" fill="#F4C6A0"/>
+          </g>
+          <g class="runner-arm-front" style="transform-origin:100px 68px;">
+            <rect x="${(100 - armW / 2).toFixed(1)}" y="68" width="${armW}" height="45" rx="${armW / 2}" fill="#F4C6A0"/>
+          </g>
+          <circle cx="100" cy="42" r="20" fill="#F4C6A0"/>
+        </g>
+      </svg>
+      <div class="runner-level-name">${level.name}</div>
+      <div class="runner-quote">${quote}</div>
+    `;
   }
 
   function renderHomeMap(runs) {
@@ -1441,14 +1516,23 @@
       Voice.setComedyMode(on);
       Voice.speak(on ? '웃긴 모드 켰습니다' : '웃긴 모드 껐어요');
     });
+    $('btn-shuffle-nickname').addEventListener('click', async () => {
+      const nick = generateRandomNickname();
+      localStorage.setItem(NICKNAME_KEY, nick);
+      $('profile-nickname-display').textContent = nick;
+      Voice.speak(`새 닉네임, ${nick}`);
+      if (currentUser) {
+        const pub = await Auth.isPublished(currentUser.uid).catch(() => false);
+        if (pub) Auth.publishLeaderboard(currentUser.uid, nick).catch(console.warn);
+      }
+    });
     $('profile-publish-toggle').addEventListener('change', async (e) => {
       if (!currentUser) { e.target.checked = false; return; }
       const wantPublish = e.target.checked;
       e.target.disabled = true;
       try {
         if (wantPublish) {
-          const displayName = cachedProfile?.username || cachedProfile?.name || '러너';
-          await Auth.publishLeaderboard(currentUser.uid, displayName);
+          await Auth.publishLeaderboard(currentUser.uid, getOrCreateNickname());
           Voice.speak('이번년도 기록을 공개했어요');
         } else {
           await Auth.unpublishLeaderboard(currentUser.uid);

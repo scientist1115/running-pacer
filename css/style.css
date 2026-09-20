@@ -365,6 +365,17 @@ html, body {
   box-shadow: 0 3px 8px -3px rgba(0, 0, 0, 0.5);
 }
 
+.runner-bob { animation: runnerBob 0.55s ease-in-out infinite; }
+@keyframes runnerBob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+.runner-leg-front { animation: runnerLegFront 0.55s ease-in-out infinite; }
+.runner-leg-back { animation: runnerLegBack 0.55s ease-in-out infinite; }
+.runner-arm-back { animation: runnerLegFront 0.55s ease-in-out infinite; }
+.runner-arm-front { animation: runnerLegBack 0.55s ease-in-out infinite; }
+@keyframes runnerLegFront { 0%, 100% { transform: rotate(28deg); } 50% { transform: rotate(-22deg); } }
+@keyframes runnerLegBack { 0%, 100% { transform: rotate(-22deg); } 50% { transform: rotate(28deg); } }
+.runner-level-name { font-family: var(--font-display); font-size: 20px; color: var(--go); margin-top: 6px; }
+.runner-quote { font-size: 12.5px; color: var(--mute); margin-top: 4px; line-height: 1.4; padding: 0 10px; }
+
 /* 카운트다운 (3-2-1) */
 #screen-countdown { background: var(--ink); }
 #countdown-num {
