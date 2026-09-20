@@ -38,12 +38,12 @@ async function getRegionFilter(centerLat, centerLng) {
 async function fetchGovCrosswalks(minLat, maxLat, minLng, maxLng) {
   const serviceKey = decodeURIComponent(process.env.DATA_GO_KR_KEY || '');
 
-  function buildUrl(regionFilter) {
+  function buildUrl(regionFilter, pageNo = 1) {
     const u = new URL('https://api.data.go.kr/openapi/tn_pubr_public_crosswalk_api');
     u.searchParams.set('serviceKey', serviceKey);
     u.searchParams.set('type', 'json');
     u.searchParams.set('numOfRows', '1000');
-    u.searchParams.set('pageNo', '1');
+    u.searchParams.set('pageNo', String(pageNo));
     if (regionFilter?.sido) {
       u.searchParams.append('filterKey', '시도명');
       u.searchParams.append('filterValues', regionFilter.sido);
@@ -63,11 +63,15 @@ async function fetchGovCrosswalks(minLat, maxLat, minLng, maxLng) {
   const regionFilter = await getRegionFilter((minLat + maxLat) / 2, (minLng + maxLng) / 2);
   // 필터 버전과 무필터 버전을 순서대로 시도하면 최악의 경우 거의 8초까지 걸릴 수 있어서,
   // 지역필터가 있으면 두 요청을 동시에 보내고 필터 결과가 비어있을 때만 무필터 결과로 대체함
-  const [filteredRes, fallbackRes] = await Promise.all([
-    fetchWithTimeout(buildUrl(regionFilter), {}, 4000).then((r) => r.json()).catch(() => null),
-    regionFilter ? fetchWithTimeout(buildUrl(null), {}, 4000).then((r) => r.json()).catch(() => null) : Promise.resolve(null),
-  ]);
-  let list = filteredRes ? extractList(filteredRes) : [];
+  // 한 시군구의 횡단보도는 수천 건이라 첫 1000건만 받으면 대부분 내 경로 밖이어서, 지역 필터가 있으면 4페이지를 동시에 받음
+  const pageCount = regionFilter ? 4 : 1;
+  const filteredPages = await Promise.all(
+    Array.from({ length: pageCount }, (_, i) => fetchWithTimeout(buildUrl(regionFilter, i + 1), {}, 4500).then((r) => r.json()).catch(() => null))
+  );
+  const fallbackRes = regionFilter
+    ? await fetchWithTimeout(buildUrl(null), {}, 4000).then((r) => r.json()).catch(() => null)
+    : null;
+  let list = filteredPages.flatMap((p) => (p ? extractList(p) : []));
   if (regionFilter && list.length === 0 && fallbackRes) {
     list = extractList(fallbackRes);
   }
@@ -86,7 +90,10 @@ async function fetchGovCrosswalks(minLat, maxLat, minLng, maxLng) {
 // OSM에서 bbox 안의 횡단보도 좌표들을 뽑아서 [{lat,lng}, ...]로 돌려줌
 async function fetchOsmCrosswalks(minLat, maxLat, minLng, maxLng) {
   // highway=crossing: OSM에서 보행자 횡단 지점(신호등 유무 상관없이)에 붙이는 표준 태그
-  const query = `[out:json][timeout:20];node["highway"="crossing"](${minLat},${minLng},${maxLat},${maxLng});out tags;`;
+  // 한국 OSM은 횡단보도를 점(node)이 아니라 선(way, footway=crossing)으로 그린 곳이 많아서 둘 다 조회함.
+  // 선은 out center로 중심 좌표를 받고, 표시만 있는(crossing=unmarked) 건 횡단보도로 안 셈
+  const bbox = `${minLat},${minLng},${maxLat},${maxLng}`;
+  const query = `[out:json][timeout:20];(node["highway"="crossing"](${bbox});node["crossing"](${bbox});way["footway"="crossing"](${bbox});way["highway"="crossing"](${bbox}););out center tags;`;
 
   async function tryEndpoint(url) {
     const overpassRes = await fetchWithTimeout(url, {
@@ -96,20 +103,40 @@ async function fetchOsmCrosswalks(minLat, maxLat, minLng, maxLng) {
     }, 6000);
     if (!overpassRes.ok) throw new Error(`Overpass 응답 실패(${url}): ${overpassRes.status}`);
     const data = await overpassRes.json();
-    return (data.elements || []).map((el) => ({ lat: el.lat, lng: el.lon }));
+    const seen = new Set();
+    const out = [];
+    for (const el of data.elements || []) {
+      const key = `${el.type}${el.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const crossing = el.tags?.crossing;
+      if (crossing === 'unmarked' || crossing === 'no') continue;
+      const lat = el.lat ?? el.center?.lat;
+      const lng = el.lon ?? el.center?.lon;
+      if (typeof lat === 'number' && typeof lng === 'number') out.push({ lat, lng });
+    }
+    return out;
   }
 
   // overpass-api.de(공식 서버)가 최근 널리 보고된 406/429 오류를 자주 내고 있어서 대체 서버들도 같이 시도함.
   // 순서대로 하면 다 실패할 때 시간이 몇 배로 걸려서, 동시에 보내고 먼저 성공하는 쪽을 씀
-  const results = await Promise.allSettled([
-    tryEndpoint('https://overpass.private.coffee/api/interpreter'),
-    tryEndpoint('https://overpass.kumi.systems/api/interpreter'),
-    tryEndpoint('https://overpass-api.de/api/interpreter'),
-  ]);
-  const success = results.find((r) => r.status === 'fulfilled');
-  if (success) return success.value;
-  const reasons = results.map((r) => r.reason?.message).filter(Boolean).join(' / ');
-  throw new Error(reasons || 'Overpass 서버들에 모두 접속하지 못했어요');
+  // 무료 공개 서버라 순간적으로 다 실패하기도 해서, 전부 실패하면 잠깐 뒤 한 번 더 시도함
+  async function attempt() {
+    const results = await Promise.allSettled([
+      tryEndpoint('https://overpass.private.coffee/api/interpreter'),
+      tryEndpoint('https://overpass.kumi.systems/api/interpreter'),
+      tryEndpoint('https://overpass-api.de/api/interpreter'),
+    ]);
+    const success = results.find((r) => r.status === 'fulfilled');
+    if (success) return { value: success.value };
+    return { reasons: results.map((r) => r.reason?.message).filter(Boolean).join(' / ') };
+  }
+  let out = await attempt();
+  if (out.value) return out.value;
+  await new Promise((r) => setTimeout(r, 700));
+  out = await attempt();
+  if (out.value) return out.value;
+  throw new Error(out.reasons || 'Overpass 서버들에 모두 접속하지 못했어요');
 }
 
 module.exports = async (req, res) => {
@@ -132,7 +159,9 @@ module.exports = async (req, res) => {
     if (govError) console.warn('정부 횡단보도 API 실패:', govError);
     if (osmError) console.warn('OSM 횡단보도 조회 실패:', osmError);
 
-    const ok = gov !== null || osm !== null;
+    // OSM 조회가 성공했거나, 정부 자료에서 실제로 1건 이상 찾았을 때만 "데이터를 확인했다"고 봄.
+    // (예전엔 정부 API가 빈 목록을 돌려줘도 성공으로 쳐서, OSM이 실패한 순간 횡단보도가 0개로 잘못 표시됐음)
+    const ok = osm !== null || (gov !== null && gov.length > 0);
     const points = [...(gov || []), ...(osm || [])];
 
     res.status(200).json({
