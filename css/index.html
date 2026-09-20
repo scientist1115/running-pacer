@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<title>런페이서</title>
+<link rel="icon" href="icons/icon-192.png" type="image/png" />
+<link rel="manifest" href="manifest.json" />
+<meta name="theme-color" content="#10151A" />
+<link rel="apple-touch-icon" href="icons/icon-192.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="css/style.css" />
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" />
+<script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+</head>
+<body>
+<div id="app">
+
+  <!-- 상단 고정 - 올해 목표까지 남은 거리 -->
+  <div id="goal-header" class="hidden">목표까지 -km 남음</div>
+
+  <!-- -1. 시작 인트로 영상 -->
+  <section id="screen-intro" class="screen active">
+    <video id="intro-video" src="media/intro.mp4" autoplay muted playsinline webkit-playsinline="true"></video>
+    <button id="btn-skip-intro" class="btn-secondary" style="position:absolute; bottom:24px; left:24px; right:24px;">건너뛰기</button>
+  </section>
+
+  <!-- 0. 로그인/회원가입 -->
+  <section id="screen-auth" class="screen">
+    <p class="onboard-title">시작하기</p>
+    <div class="tab-row">
+      <button id="tab-login" class="tab-btn active" type="button">로그인</button>
+      <button id="tab-signup" class="tab-btn" type="button">회원가입</button>
+    </div>
+
+    <form id="form-login" class="auth-form">
+      <input type="text" id="login-id" placeholder="아이디" autocomplete="username" required />
+      <input type="password" id="login-pw" placeholder="비밀번호" autocomplete="current-password" required />
+      <label class="remember-row">
+        <input type="checkbox" id="login-remember" checked />
+        <span>로그인 상태 유지하기</span>
+      </label>
+      <button type="submit" class="btn-primary">로그인</button>
+    </form>
+
+    <form id="form-signup" class="auth-form hidden">
+      <div class="id-check-row">
+        <input type="text" id="signup-id" placeholder="아이디 (영문+숫자 8~14자)" autocomplete="username" required />
+        <button type="button" id="btn-check-id" class="btn-check">중복확인</button>
+      </div>
+      <p id="id-check-result" class="id-check-result hidden"></p>
+      <input type="password" id="signup-pw" placeholder="비밀번호 (8자 이상)" autocomplete="new-password" required />
+      <input type="text" id="signup-name" placeholder="이름" required />
+      <input type="number" id="signup-age" placeholder="나이" min="1" max="120" required />
+      <select id="signup-gender" required>
+        <option value="" disabled selected>성별</option>
+        <option value="male">남성</option>
+        <option value="female">여성</option>
+        <option value="none">응답 안 함</option>
+      </select>
+      <button type="submit" class="btn-primary">회원가입</button>
+    </form>
+
+    <div class="auth-divider">또는</div>
+    <button id="btn-google-login" class="btn-secondary" type="button">Google로 계속하기</button>
+    <p id="auth-error" class="auth-error hidden"></p>
+  </section>
+
+  <!-- 0-1. 가입 직후: 올해 목표 거리 설정 -->
+  <section id="screen-goal" class="screen">
+    <p class="onboard-title">올해 목표 거리를 정해볼까요?</p>
+    <p class="onboard-sub">나중에 마이페이지에서 언제든 바꿀 수 있어요.</p>
+    <input type="number" id="goal-input" placeholder="목표 거리(km)" min="1" />
+    <button id="btn-goal-save" class="btn-primary" style="margin-top: 12px;">설정하기</button>
+    <button id="btn-goal-skip" class="btn-secondary">건너뛰기</button>
+  </section>
+
+  <!-- 1. 온보딩: 셀카 촬영해서 지도 마커로 사용 -->
+  <section id="screen-onboard" class="screen">
+    <p class="onboard-title">얼굴로 내 위치 표시하기</p>
+    <p class="onboard-sub">달리는 동안 지도 위에서 나를 쉽게 알아볼 수 있도록,<br/>내 얼굴 사진을 위치 마커로 써요.</p>
+    <video id="camera-preview" autoplay playsinline></video>
+    <canvas id="selfie-canvas" class="hidden" width="400" height="400"></canvas>
+    <button id="btn-shoot" class="btn-primary">촬영하기</button>
+    <button id="btn-retake" class="btn-secondary hidden">다시 찍기</button>
+    <button id="btn-confirm" class="btn-primary hidden">이 사진으로 시작</button>
+    <button id="btn-skip" class="btn-secondary">건너뛰기 (기본 마커 사용)</button>
+  </section>
+
+  <!-- 1-1. 홈 화면: 러닝 시작 + 기록/그래프/지도 + 로그아웃 -->
+  <section id="screen-home" class="screen">
+    <div class="setup-header-row">
+      <p class="onboard-title" style="margin:0; font-size:26px;">런페이서</p>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button id="btn-home-profile" class="avatar-btn" type="button" title="마이페이지">
+          <img id="home-avatar-img" src="" alt="" />
+          <svg id="home-avatar-fallback" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+        </button>
+        <button id="btn-home-items" class="btn-icon" type="button" title="아이템 창">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h12l1.5 12.5a1 1 0 0 1-1 1.1h-13a1 1 0 0 1-1-1.1z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>
+        </button>
+        <button id="btn-logout" class="btn-icon" type="button" title="로그아웃">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <div class="home-hero-card">
+      <p class="home-greeting" id="home-greeting">오늘도 좋은 하루예요</p>
+      <div class="home-goal-num" id="home-goal-num">목표 없음</div>
+      <div class="home-goal-bar-row">
+        <div class="goal-bar-track"><div class="goal-bar-fill" id="home-goal-bar" style="width:0%;"></div></div>
+        <div class="home-goal-pct" id="home-goal-pct"></div>
+      </div>
+      <div class="home-pace-row" id="home-pace-row">
+        <div class="home-pace-item"><span id="home-pace-avg">-'--"</span><label>평균 페이스</label></div>
+        <div class="home-pace-item"><span><i id="home-pace-last">-'--"</i><em id="home-pace-delta"></em></span><label>최근 러닝</label></div>
+        <div class="home-pace-item"><span id="home-pace-best">-'--"</span><label>최고 페이스</label></div>
+      </div>
+    </div>
+
+    <div class="section-card" id="runner-character-box" style="text-align:center;"></div>
+
+    <button id="btn-go-run" class="cta-card" type="button">
+      <span class="cta-icon"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg></span>
+      <span>
+        <div class="cta-title">러닝 시작하기</div>
+        <div class="cta-sub">목적지나 거리를 말해보세요</div>
+      </span>
+    </button>
+
+    <div class="section-card">
+      <div class="section-card-head">
+        <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 21h8M12 17v4M7 4h10v5a5 5 0 0 1-10 0V4z"/><path d="M7 5H4a2 2 0 0 0 2 4M17 5h3a2 2 0 0 1-2 4"/></svg></span>
+        이번년도 순위
+      </div>
+      <div id="leaderboard-list"></div>
+    </div>
+
+    <div class="section-card">
+      <div class="section-card-head">
+        <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="1 6 1 22 8 18 16 22 23 18 23 2 16 6 8 2 1 6"/><line x1="8" y1="2" x2="8" y2="18"/><line x1="16" y1="6" x2="16" y2="22"/></svg></span>
+        지난 경로
+      </div>
+      <div id="home-map" style="width:100%; height:170px; border-radius:12px; overflow:hidden; background:var(--surface-raised);"></div>
+    </div>
+
+    <div class="section-card">
+      <div class="section-card-head">
+        <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
+        최근 페이스
+      </div>
+      <div id="pace-chart" style="width:100%;"></div>
+      <div id="pace-chart-detail" class="pace-detail"></div>
+    </div>
+
+    <div class="section-card">
+      <div class="section-card-head">
+        <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg></span>
+        지난 기록
+      </div>
+      <div id="run-history-list"></div>
+    </div>
+  </section>
+
+  <!-- 1-2. 아이템 창: 고급 아이템(5·7km 코스 완주) / 기본 아이템(누적 거리 해금) / 걷는 캐릭터 -->
+  <section id="screen-items" class="screen">
+    <div class="setup-header-row">
+      <button id="btn-items-back" class="btn-icon" type="button" title="홈으로">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      </button>
+      <p class="onboard-title" style="margin:0; font-size:24px;">아이템 창</p>
+      <span style="width:40px;"></span>
+    </div>
+    <div class="section-card" id="items-hero" style="margin-top:16px;"></div>
+    <div id="items-premium"></div>
+    <div id="items-filter-chips" class="crosswalk-selector-chips" style="margin-bottom:8px;"></div>
+    <div id="items-tier-legend" class="tier-legend"></div>
+    <div id="items-slot-list"></div>
+  </section>
+
+  <!-- 2. 목적지/거리 설정 -->
+  <section id="screen-setup" class="screen">
+    <div class="setup-header-row">
+      <button id="btn-setup-back" class="btn-icon" type="button" title="홈으로">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+      </button>
+      <p class="onboard-title" style="margin:0; font-size:22px;">오늘은 어떻게 달릴까요?</p>
+      <button id="btn-open-profile" class="btn-icon" type="button" title="마이페이지">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+      </button>
+    </div>
+    <p class="onboard-sub">마이크를 누르고 "OO공원까지 3키로" 또는<br/>"5키로 달릴래" 처럼 말해보세요.</p>
+    <button id="btn-setup-mic" class="btn-primary">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+      말로 설정하기
+    </button>
+    <button id="btn-setup-manual" class="btn-secondary">직접 입력하기</button>
+  </section>
+
+  <!-- 2-1. 마이페이지: 사진 변경 / 목표거리 수정 / 노래 관리 -->
+  <section id="screen-profile" class="screen">
+    <p class="onboard-title">마이페이지</p>
+    <img id="profile-face-preview" src="" alt="내 얼굴 마커" />
+    <button id="btn-change-photo" class="btn-secondary">사진 변경하기</button>
+    <div style="margin-top: 20px;">
+      <p class="onboard-sub" style="margin-bottom: 8px;">올해 목표 거리(km)</p>
+      <input type="number" id="profile-goal-input" placeholder="목표 거리(km)" min="1" />
+      <button id="btn-profile-goal-save" class="btn-primary" style="margin-top: 10px;">저장</button>
+    </div>
+    <div class="profile-toggle-row">
+      <div>
+        <p class="onboard-sub" style="margin-bottom:2px;">웃긴 안내 모드</p>
+        <p class="profile-toggle-hint">음성 안내가 구수하고 능청스러운 아저씨 톤으로 바뀌어요</p>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="profile-comedy-toggle" />
+        <span class="switch-track"></span>
+      </label>
+    </div>
+    <div style="margin-top: 16px;">
+      <p class="onboard-sub" style="margin-bottom: 8px;">화살표 표시 방식</p>
+      <div id="arrow-mode-chips" class="crosswalk-selector-chips"></div>
+      <p class="profile-toggle-hint" style="margin-top: 8px;">AR 카메라는 실제 카메라 화면 위에 갈 방향을 화살표로 겹쳐 보여줘요. 나침반 정확도에 따라 흔들릴 수 있어요.</p>
+    </div>
+    <div style="margin-top: 16px;">
+      <p class="onboard-sub" style="margin-bottom: 8px;">안내 목소리</p>
+      <div id="voice-select-chips" class="crosswalk-selector-chips"></div>
+      <p class="profile-toggle-hint" style="margin-top: 8px;">캐릭터 목소리는 서버에 목소리가 준비된 뒤에만 골라져요</p>
+    </div>
+    <div class="profile-toggle-row">
+      <div>
+        <p class="onboard-sub" style="margin-bottom:2px;">이번년도 기록 공개하기</p>
+        <p class="profile-toggle-hint">켜면 홈 화면 순위에 닉네임·이번년도 거리·페이스가 공개돼요</p>
+      </div>
+      <label class="switch">
+        <input type="checkbox" id="profile-publish-toggle" />
+        <span class="switch-track"></span>
+      </label>
+    </div>
+    <div class="profile-toggle-row" style="margin-top: -6px;">
+      <div>
+        <p class="onboard-sub" style="margin-bottom:2px;">순위에 뜰 닉네임</p>
+        <p class="profile-toggle-hint" id="profile-nickname-display">-</p>
+      </div>
+      <button id="btn-shuffle-nickname" class="btn-icon" type="button" title="닉네임 바꾸기">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      </button>
+    </div>
+    <div style="margin-top: 20px;">
+      <p class="onboard-sub" style="margin-bottom: 8px;">러닝 음악</p>
+      <input type="file" id="music-file-input" accept="audio/*" multiple class="hidden" />
+      <button id="btn-add-music" class="btn-secondary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        내 파일에서 추가
+      </button>
+
+      <div class="music-search-row">
+        <input type="text" id="youtube-search-input" placeholder="유튜브에서 검색" />
+        <button id="btn-youtube-search" class="btn-check" type="button">검색</button>
+      </div>
+      <div id="youtube-search-results"></div>
+
+      <button id="btn-spotify-connect" class="btn-secondary" style="margin-top: 10px;">Spotify 연결하기</button>
+      <div id="spotify-search-box" class="hidden">
+        <div class="music-search-row">
+          <input type="text" id="spotify-search-input" placeholder="Spotify에서 검색" />
+          <button id="btn-spotify-search" class="btn-check" type="button">검색</button>
+        </div>
+        <div id="spotify-search-results"></div>
+      </div>
+    </div>
+    <button id="btn-profile-close" class="btn-secondary" style="margin-top: 20px;">닫기</button>
+  </section>
+
+  <!-- 2-2. 카운트다운 (3-2-1) -->
+  <section id="screen-countdown" class="screen" style="align-items:center; justify-content:center;">
+    <div id="countdown-num">3</div>
+  </section>
+
+  <!-- 3. 러닝 화면 -->
+  <section id="screen-run" class="screen">
+    <div id="map-area">
+      <div id="map-canvas"></div>
+      <div id="ar-layer" class="hidden">
+        <video id="ar-video" autoplay muted playsinline webkit-playsinline="true"></video>
+        <canvas id="ar-canvas"></canvas>
+      </div>
+      <div id="youtube-player-box">
+        <div id="youtube-player"></div>
+        <button id="btn-next-song" type="button" title="다음 곡">
+          <svg viewBox="0 0 24 24" fill="currentColor"><polygon points="5 4 15 12 5 20 5 4"/><rect x="17" y="4" width="3" height="16"/></svg>
+        </button>
+      </div>
+      <div id="premium-run-banner" class="hidden"></div>
+      <div id="turn-banner" class="hidden">
+        <span id="turn-dist">-</span>
+        <span id="turn-desc">-</span>
+      </div>
+      <div id="crosswalk-selector" class="hidden">
+        <div class="crosswalk-selector-label">신호등이 불편하면 골라보세요</div>
+        <div id="crosswalk-selector-chips" class="crosswalk-selector-chips"></div>
+        <div class="crosswalk-selector-hint">개수를 줄이면 목적지 대신 근처를 빙 도는 경로가 나올 수 있어요</div>
+      </div>
+      <button id="btn-start-run" class="cta-card hidden" type="button" style="position:absolute; left:16px; right:16px; bottom:16px; margin:0; z-index:700;">
+        <span class="cta-icon"><svg viewBox="0 0 24 24" fill="currentColor"><polygon points="6 3 20 12 6 21 6 3"/></svg></span>
+        <span>
+          <div class="cta-title">러닝 시작하기</div>
+          <div class="cta-sub" id="route-ready-sub">경로가 준비됐어요</div>
+        </span>
+      </button>
+      <button id="mic-btn">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/></svg>
+      </button>
+    </div>
+    <div id="voice-caption">
+      <div class="label">음성 안내</div>
+      <div class="text" id="voice-caption-text">경로를 준비하고 있어요…</div>
+    </div>
+    <div id="hero-panel">
+      <div class="hero-label">페이스</div>
+      <div class="hero-value"><span id="stat-pace">-'--"</span><span class="hero-unit">/km</span></div>
+      <div class="hero-sub-row">
+        <div class="hero-sub-item">
+          <span id="stat-elapsed">0:00</span>
+          <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/></svg>경과시간</label>
+        </div>
+        <div class="hero-sub-item">
+          <span id="stat-covered">0.0km</span>
+          <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16M4 15l4-8 4 5 3-4 5 7"/></svg>달린거리</label>
+        </div>
+        <div class="hero-sub-item">
+          <span id="stat-distance">-</span>
+          <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>남은거리</label>
+        </div>
+        <div class="hero-sub-item">
+          <span id="stat-eta">-</span>
+          <label><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><polyline points="12 8 12 12 14.5 13.5"/><path d="M9 3h6"/></svg>도착까지</label>
+        </div>
+      </div>
+    </div>
+    <button id="btn-end-run" class="btn-secondary" style="margin: 10px 16px 16px;">
+      <svg viewBox="0 0 24 24" fill="currentColor" style="width:14px;height:14px;"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      러닝 종료하기
+    </button>
+  </section>
+
+  <!-- 3-1. 러닝 완료 요약: 오늘 경로 + 페이스 그래프 -->
+  <section id="screen-finish" class="screen">
+    <p class="onboard-title" id="finish-title" style="font-size:28px;">러닝 완료!</p>
+
+    <div class="finish-hero">
+      <div class="finish-hero-label">총 거리</div>
+      <div class="finish-hero-value" id="finish-distance">-</div>
+      <div class="finish-hero-sub-row">
+        <div class="finish-hero-sub"><span id="finish-duration">-</span><label>시간</label></div>
+        <div class="finish-hero-sub"><span id="finish-pace">-</span><label>평균 페이스</label></div>
+      </div>
+    </div>
+
+    <div class="section-card" style="padding:0; overflow:hidden;">
+      <div id="finish-map" style="width:100%; height:170px; background:var(--surface-raised);"></div>
+    </div>
+
+    <div class="section-card hidden" id="finish-new-items"></div>
+
+    <div class="section-card">
+      <div class="section-card-head">
+        <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg></span>
+        구간별 페이스 분석
+      </div>
+      <div class="finish-panel">
+        <div class="finish-panel-label">A · 거리별 페이스 (번호는 아래 분석과 연결돼요)</div>
+        <div id="finish-chart-a" class="finish-panel-chart"></div>
+      </div>
+      <div class="finish-panel">
+        <div class="finish-panel-label">B · 페이스 분포</div>
+        <div id="finish-chart-b" class="finish-panel-chart" style="height:110px;"></div>
+      </div>
+      <div class="finish-panel">
+        <div class="finish-panel-label">C · 최근 기록과 비교</div>
+        <div id="finish-chart-c" class="finish-panel-chart" style="height:130px;"></div>
+      </div>
+      <div class="finish-panel-label" style="margin-top:6px;">이번 러닝 분석</div>
+      <div id="finish-pace-analysis" class="finish-pace-analysis" style="margin-top:6px;"></div>
+    </div>
+
+    <button id="btn-finish-home" class="btn-primary" style="margin-top: 10px;">홈으로</button>
+  </section>
+
+</div>
+
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="https://unpkg.com/three@0.160.0/build/three.min.js"></script>
+<script src="js/ar-xr.js"></script>
+<script src="js/auth.js"></script>
+<script src="js/spotify.js"></script>
+<script src="js/music.js"></script>
+<script src="js/voice.js"></script>
+<script src="js/route.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
