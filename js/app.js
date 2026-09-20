@@ -5,60 +5,250 @@
   const VOICE_KEY = 'run-pacer-voice-key';
   const ARROW_MODE_KEY = 'run-pacer-arrow-mode'; // 'map' | 'ar'
   const NICKNAME_KEY = 'run-pacer-leaderboard-nickname';
-  const ITEMS_KEY = 'run-pacer-items'; // localStorage: 보유한 아이템 id 배열(획득 순서 유지)
-  let lastItemMilestone = 0; // 이번 러닝에서 마지막으로 아이템을 받은 거리(m)
-  let itemPopupTimer = null;
+  let analysisToken = 0;      // 러닝 분석(장소 조회) 비동기 결과가 오래된 화면을 덮어쓰지 않게 하는 토큰
+  let itemsFilter = 'all';    // 아이템 창 필터: 'all' | '3' | '5'
 
-  // 3km마다 러닝 중에 랜덤으로 하나씩 얻는 아이템 10종 - 슬롯별로 캐릭터에 장착돼서 보여짐
-  const ITEM_CATALOG = [
-    { id: 'headband', name: '머리띠', slot: 'head', color: '#FF6B5E' },
-    { id: 'cap', name: '모자', slot: 'head', color: '#4FD8FF' },
-    { id: 'sunglasses', name: '선글라스', slot: 'head', color: '#2C2C2C' },
-    { id: 'waterbottle', name: '물병', slot: 'hand', color: '#4FA8FF' },
-    { id: 'energydrink', name: '에너지드링크', slot: 'hand', color: '#FFB238' },
-    { id: 'kneepads', name: '무릎보호대', slot: 'legs', color: '#8B5CF6' },
-    { id: 'armsleeve', name: '팔토시', slot: 'arms', color: '#38E1FF' },
-    { id: 'scarf', name: '목도리', slot: 'neck', color: '#FF9FB2' },
-    { id: 'wristband', name: '손목밴드', slot: 'wrist', color: '#FFD60A' },
-    { id: 'vest', name: '조끼', slot: 'torso', color: '#2BD97C' },
+  /* ================= 아이템 시스템 (누적 거리로 해금, 부위별로 진화) =================
+   * - 러닝 중에는 아이템을 주지 않아요. 누적 러닝 거리(Firestore distanceRunKm)가 쌓이면 순서대로 해금돼요.
+   * - 아이템마다 "이 아이템을 얻으려면 앞 아이템에서 더 달려야 하는 거리(stepKm)"가 3km 또는 5km로 정해져 있어요.
+   * - 같은 부위(slot)에서는 등급(tier)이 높은 아이템이 해금되면 자동으로 그걸로 진화(교체)돼요.
+   * - 거리는 서버(Firestore)에 저장된 누적 거리로 계산하니까 기기를 바꿔도 아이템이 그대로 유지돼요.
+   */
+  const TIER_INFO = {
+    1: { name: '일반', color: '#9AA7B2' },
+    2: { name: '레어', color: '#4FA8FF' },
+    3: { name: '에픽', color: '#B57BFF' },
+    4: { name: '전설', color: '#FFD60A' },
+  };
+  const SLOT_INFO = {
+    head: '머리', face: '얼굴', neck: '목', torso: '상의', arms: '팔', wrist: '손목', hand: '손', legs: '다리', feet: '신발',
+  };
+  const SLOT_ORDER = ['head', 'face', 'neck', 'torso', 'arms', 'wrist', 'hand', 'legs', 'feet'];
+
+  // 해금 순서대로 나열 - stepKm는 "앞 아이템 해금 후 이만큼 더 달리면 해금"이라는 뜻(3km짜리 / 5km짜리)
+  const ITEM_SEQUENCE = [
+    { id: 'headband', name: '머리띠', slot: 'head', tier: 1, stepKm: 3, color: '#FF6B5E' },
+    { id: 'wristband', name: '손목밴드', slot: 'wrist', tier: 1, stepKm: 3, color: '#FFD60A' },
+    { id: 'waterbottle', name: '물병', slot: 'hand', tier: 1, stepKm: 3, color: '#4FA8FF' },
+    { id: 'socks', name: '러닝 양말', slot: 'feet', tier: 1, stepKm: 3, color: '#E8ECEF' },
+    { id: 'armsleeve', name: '팔토시', slot: 'arms', tier: 1, stepKm: 3, color: '#38E1FF' },
+    { id: 'vest', name: '조끼', slot: 'torso', tier: 1, stepKm: 3, color: '#2BD97C' },
+    { id: 'glasses', name: '스포츠 안경', slot: 'face', tier: 1, stepKm: 3, color: '#8FD3FF' },
+    { id: 'neckwarmer', name: '넥워머', slot: 'neck', tier: 1, stepKm: 3, color: '#FF9FB2' },
+    { id: 'kneepads', name: '무릎보호대', slot: 'legs', tier: 1, stepKm: 3, color: '#8B5CF6' },
+    { id: 'cap', name: '러닝 캡', slot: 'head', tier: 2, stepKm: 5, color: '#4FD8FF' },
+    { id: 'smartwatch', name: '스마트워치', slot: 'wrist', tier: 2, stepKm: 5, color: '#4FE3A0' },
+    { id: 'energydrink', name: '에너지드링크', slot: 'hand', tier: 2, stepKm: 3, color: '#FFB238' },
+    { id: 'runshoes', name: '러닝화', slot: 'feet', tier: 2, stepKm: 5, color: '#FF7A45' },
+    { id: 'compsleeve', name: '압박 슬리브', slot: 'arms', tier: 2, stepKm: 3, color: '#7C8CFF' },
+    { id: 'tee', name: '기능성 티', slot: 'torso', tier: 2, stepKm: 5, color: '#4FA8FF' },
+    { id: 'sunglasses', name: '선글라스', slot: 'face', tier: 2, stepKm: 3, color: '#3A3F47' },
+    { id: 'scarf', name: '스카프', slot: 'neck', tier: 2, stepKm: 3, color: '#FF6B9D' },
+    { id: 'tights', name: '압박 타이츠', slot: 'legs', tier: 2, stepKm: 5, color: '#5B6CFF' },
+    { id: 'visor', name: '바이저 캡', slot: 'head', tier: 3, stepKm: 5, color: '#B57BFF' },
+    { id: 'mirrorgoggle', name: '미러 고글', slot: 'face', tier: 3, stepKm: 5, color: '#7DF9FF' },
+    { id: 'windbreaker', name: '바람막이', slot: 'torso', tier: 3, stepKm: 5, color: '#B57BFF' },
+    { id: 'carbonshoes', name: '카본 러닝화', slot: 'feet', tier: 3, stepKm: 5, color: '#C58BFF' },
+    { id: 'crown', name: '황금 왕관', slot: 'head', tier: 4, stepKm: 5, color: '#FFD60A' },
+    { id: 'cape', name: '히어로 망토', slot: 'torso', tier: 4, stepKm: 5, color: '#FF4D6D' },
   ];
+  const ITEM_CATALOG = (() => {
+    let acc = 0;
+    return ITEM_SEQUENCE.map((it, i) => {
+      acc += it.stepKm;
+      return { ...it, order: i + 1, unlockKm: acc };
+    });
+  })();
+  const TOTAL_ITEM_KM = ITEM_CATALOG[ITEM_CATALOG.length - 1].unlockKm;
 
-  function getOwnedItemIds() {
-    try { return JSON.parse(localStorage.getItem(ITEMS_KEY) || '[]'); } catch { return []; }
+  function getTotalRunKm() { return Math.max(cachedProfile?.distanceRunKm || 0, 0); }
+
+  function getUnlockedItems(km) {
+    return ITEM_CATALOG.filter((i) => i.unlockKm <= km + 1e-9);
   }
 
-  // 슬롯별로 가장 최근에 얻은 아이템 하나만 "장착"된 걸로 취급 (같은 부위 여러 개면 최신 것만 보임)
-  function getEquippedItems() {
-    const owned = getOwnedItemIds();
+  // 부위별로 해금된 것 중 가장 높은 등급 하나가 장착됨 (같은 부위에서 더 좋은 게 나오면 자동 진화)
+  function getEquippedItems(km) {
     const equipped = {};
-    owned.forEach((id) => {
-      const item = ITEM_CATALOG.find((i) => i.id === id);
-      if (item) equipped[item.slot] = item;
+    getUnlockedItems(km).forEach((it) => {
+      if (!equipped[it.slot] || it.tier >= equipped[it.slot].tier) equipped[it.slot] = it;
     });
     return equipped;
   }
 
-  function showItemPopup(text) {
-    const el = $('item-popup');
-    if (!el) return;
-    el.textContent = text;
-    el.classList.add('show');
-    clearTimeout(itemPopupTimer);
-    itemPopupTimer = setTimeout(() => el.classList.remove('show'), 3000);
+  function getNextItem(km) {
+    return ITEM_CATALOG.find((i) => i.unlockKm > km + 1e-9) || null;
   }
 
-  // 3km 지점마다 호출됨 - 랜덤 아이템 하나를 주고, 이미 있으면 그렇다고 알려줌
-  function awardRandomItem() {
-    const item = ITEM_CATALOG[Math.floor(Math.random() * ITEM_CATALOG.length)];
-    const owned = getOwnedItemIds();
-    const already = owned.includes(item.id);
-    if (!already) {
-      owned.push(item.id);
-      localStorage.setItem(ITEMS_KEY, JSON.stringify(owned));
-    }
-    showItemPopup(already ? `🎁 ${item.name} (이미 보유)` : `🎁 아이템 획득: ${item.name}!`);
-    announce(already ? `${item.name}를 또 발견했어요` : `아이템을 획득했어요! ${item.name}`);
+  // 이번 러닝으로 (prevKm → prevKm+gainKm) 새로 해금된 아이템들
+  function getNewlyUnlocked(prevKm, gainKm) {
+    return ITEM_CATALOG.filter((i) => i.unlockKm > prevKm + 1e-9 && i.unlockKm <= prevKm + gainKm + 1e-9);
   }
+
+  // 아이템 하나를 작은 아이콘(SVG)으로 그림 - 부위와 등급에 따라 모양이 달라짐
+  function itemGlyphSvg(item) {
+    const c = item.color;
+    const dark = 'rgba(0,0,0,0.3)';
+    let inner = '';
+    switch (item.slot) {
+      case 'head':
+        if (item.tier === 1) inner = `<rect x="7" y="20" width="34" height="9" rx="4.5" fill="${c}"/><rect x="7" y="24" width="34" height="2" fill="#fff" opacity=".35"/>`;
+        else if (item.tier === 2) inner = `<path d="M9 31a15 15 0 0 1 30 0z" fill="${c}"/><rect x="24" y="29" width="20" height="4" rx="2" fill="${c}" opacity=".7"/><circle cx="24" cy="17" r="2" fill="#fff" opacity=".6"/>`;
+        else if (item.tier === 3) inner = `<path d="M9 29a15 13 0 0 1 30 0z" fill="${c}"/><rect x="8" y="28" width="32" height="3" fill="${dark}"/><rect x="22" y="29" width="24" height="4" rx="2" fill="#fff" opacity=".9"/>`;
+        else inner = `<path d="M7 35 L10 14 L19 24 L24 9 L29 24 L38 14 L41 35z" fill="${c}" stroke="#B8860B" stroke-width="1.6" stroke-linejoin="round"/><circle cx="24" cy="27" r="3" fill="#FF4D6D"/><circle cx="14" cy="29" r="2" fill="#4FD8FF"/><circle cx="34" cy="29" r="2" fill="#4FD8FF"/>`;
+        break;
+      case 'face':
+        if (item.tier === 1) inner = `<circle cx="15" cy="26" r="7.5" fill="none" stroke="${c}" stroke-width="3"/><circle cx="33" cy="26" r="7.5" fill="none" stroke="${c}" stroke-width="3"/><path d="M22 25h4" stroke="${c}" stroke-width="3"/>`;
+        else if (item.tier === 2) inner = `<rect x="5" y="19" width="17" height="13" rx="5.5" fill="${c}"/><rect x="26" y="19" width="17" height="13" rx="5.5" fill="${c}"/><rect x="21" y="23" width="6" height="3" fill="${c}"/><path d="M9 23h6M30 23h6" stroke="#fff" stroke-width="2" opacity=".4"/>`;
+        else inner = `<rect x="4" y="16" width="40" height="20" rx="10" fill="${c}"/><rect x="8" y="20" width="32" height="12" rx="6" fill="#0d2233"/><path d="M12 24h8M28 24h6" stroke="#fff" stroke-width="2" opacity=".6"/>`;
+        break;
+      case 'neck':
+        if (item.tier === 1) inner = `<rect x="8" y="17" width="32" height="15" rx="7.5" fill="${c}"/><path d="M15 17v15M24 17v15M33 17v15" stroke="${dark}" stroke-width="2"/>`;
+        else inner = `<rect x="7" y="14" width="34" height="11" rx="5.5" fill="${c}"/><path d="M29 22l6 20h-9l-1-20z" fill="${c}"/><path d="M27 32h8" stroke="#fff" stroke-width="2" opacity=".5"/>`;
+        break;
+      case 'torso':
+        if (item.tier === 1) inner = `<path d="M12 9L20 7Q24 14 28 7L36 9L35 41H13z" fill="${c}"/><path d="M24 12v29" stroke="${dark}" stroke-width="2"/>`;
+        else if (item.tier === 2) inner = `<path d="M16 7Q24 14 32 7L44 15L38 22L34 19V41H14V19L10 22L4 15z" fill="${c}"/><rect x="14" y="30" width="20" height="3" fill="#fff" opacity=".4"/>`;
+        else if (item.tier === 3) inner = `<path d="M16 7Q24 14 32 7L44 15L38 22L34 19V41H14V19L10 22L4 15z" fill="${c}"/><path d="M24 11v30" stroke="#fff" stroke-width="2" opacity=".8"/><rect x="16" y="30" width="6" height="5" rx="1" fill="${dark}"/><rect x="26" y="30" width="6" height="5" rx="1" fill="${dark}"/>`;
+        else inner = `<path d="M13 7Q24 12 35 7L45 43Q24 34 3 43z" fill="${c}"/><circle cx="24" cy="10" r="3.2" fill="#FFD60A"/><path d="M14 30Q24 36 34 30" stroke="#fff" stroke-width="2" fill="none" opacity=".4"/>`;
+        break;
+      case 'arms':
+        inner = `<rect x="16" y="5" width="16" height="38" rx="8" fill="${c}"/><rect x="16" y="14" width="16" height="3" fill="#fff" opacity=".5"/>` +
+          (item.tier >= 2 ? `<rect x="16" y="24" width="16" height="3" fill="#fff" opacity=".5"/><rect x="16" y="34" width="16" height="3" fill="#fff" opacity=".5"/>` : '');
+        break;
+      case 'wrist':
+        if (item.tier === 1) inner = `<rect x="7" y="19" width="34" height="11" rx="5.5" fill="${c}"/><rect x="7" y="23" width="34" height="2.5" fill="#fff" opacity=".4"/>`;
+        else inner = `<rect x="17" y="5" width="14" height="38" rx="4" fill="#2b2f36"/><rect x="12" y="14" width="24" height="20" rx="6" fill="#111" stroke="${c}" stroke-width="2.5"/><path d="M17 27l4-5 3 3 4-6" stroke="${c}" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/>`;
+        break;
+      case 'hand':
+        if (item.tier === 1) inner = `<rect x="16" y="12" width="16" height="31" rx="5" fill="${c}"/><rect x="20" y="5" width="8" height="9" rx="2" fill="#fff" opacity=".85"/><rect x="16" y="23" width="16" height="7" fill="#fff" opacity=".35"/>`;
+        else inner = `<rect x="14" y="7" width="20" height="35" rx="5" fill="${c}"/><rect x="14" y="7" width="20" height="5" rx="2" fill="#fff" opacity=".5"/><path d="M26 15l-7 12h6l-3 11 10-14h-6z" fill="#1a1a1a"/>`;
+        break;
+      case 'legs':
+        if (item.tier === 1) inner = `<rect x="6" y="14" width="15" height="19" rx="7" fill="${c}"/><rect x="27" y="14" width="15" height="19" rx="7" fill="${c}"/><rect x="6" y="21" width="15" height="3" fill="#fff" opacity=".4"/><rect x="27" y="21" width="15" height="3" fill="#fff" opacity=".4"/>`;
+        else inner = `<path d="M11 6H37L35 43H27L24 21L21 43H13z" fill="${c}"/><path d="M11 12H37" stroke="#fff" stroke-width="2" opacity=".4"/>`;
+        break;
+      case 'feet':
+        if (item.tier === 1) inner = `<path d="M16 5h15v24l11 7v7H12z" fill="${c}"/><rect x="16" y="9" width="15" height="4" fill="#FF6B5E"/><rect x="16" y="15" width="15" height="4" fill="#FF6B5E"/>`;
+        else if (item.tier === 2) inner = `<path d="M6 26L21 22L28 29L43 32Q45 40 40 40H6z" fill="${c}"/><rect x="6" y="36" width="37" height="5" rx="2" fill="#fff"/><path d="M14 30l8-2" stroke="#fff" stroke-width="2" opacity=".6"/>`;
+        else inner = `<path d="M6 24L21 19L29 27L44 30Q46 39 41 39H6z" fill="${c}"/><rect x="6" y="35" width="38" height="6" rx="3" fill="#fff"/><path d="M12 30Q22 22 32 31" stroke="#FFD60A" stroke-width="2.4" fill="none" stroke-linecap="round"/>`;
+        break;
+      default:
+        inner = `<circle cx="24" cy="24" r="12" fill="${c}"/>`;
+    }
+    const glow = item.tier >= 3 ? ' filter="url(#ig-glow)"' : '';
+    const sparkle = item.tier >= 4
+      ? '<path d="M41 4l1.6 3.6L46 9l-3.4 1.4L41 14l-1.6-3.6L36 9l3.4-1.4z" fill="#FFF3B0"/><path d="M6 6l1.1 2.4L9.5 9.5 7.1 10.6 6 13l-1.1-2.4L2.5 9.5l2.4-1.1z" fill="#FFF3B0"/>'
+      : '';
+    return `<svg viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg"><defs><filter id="ig-glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs><g${glow}>${inner}</g>${sparkle}</svg>`;
+  }
+
+  // 캐릭터(뛰는 러너)를 그림 - 장착 아이템은 부위별 최고 등급이 반영돼서 진화할수록 화려해짐
+  function buildRunnerSvg(level, equipped, px) {
+    const muscle = 1 + level.idx * 0.18;   // 레벨이 올라갈수록 팔다리가 굵어짐(근육)
+    const heightScale = 1 + level.idx * 0.05; // 레벨이 올라갈수록 키가 살짝 커짐
+    const legW = +(10 * muscle).toFixed(1);
+    const armW = +(7 * muscle).toFixed(1);
+    const torsoW = +(32 * muscle).toFixed(1);
+    const e = equipped || {};
+    const glow = (item, s) => (item && item.tier >= 3 ? `<g filter="url(#rg-glow)">${s}</g>` : s);
+
+    // 몸통 뒤 (망토)
+    let behind = '';
+    if (e.torso && e.torso.tier >= 4) {
+      behind = `<path d="M${100 - torsoW / 2 - 2} 64 Q100 58 ${100 + torsoW / 2 + 2} 64 L${100 + torsoW / 2 + 24} 140 Q100 152 ${100 - torsoW / 2 - 24} 140Z" fill="${e.torso.color}" opacity="0.95"/>`;
+    }
+
+    // 다리에 붙는 것들 (다리 애니메이션 그룹 안에 넣어서 같이 움직임)
+    const legX = 100 - legW / 2;
+    let legExtra = '';
+    if (e.legs) {
+      if (e.legs.tier === 1) legExtra += `<rect x="${legX - 2}" y="138" width="${legW + 4}" height="13" rx="5" fill="${e.legs.color}"/><rect x="${legX - 2}" y="143" width="${legW + 4}" height="2.5" fill="#fff" opacity=".4"/>`;
+      else legExtra += `<rect x="${legX - 1}" y="118" width="${legW + 2}" height="52" rx="${(legW + 2) / 2}" fill="${e.legs.color}" opacity=".95"/><rect x="${legX - 1}" y="140" width="${legW + 2}" height="2.5" fill="#fff" opacity=".4"/>`;
+    }
+    if (e.feet) {
+      const f = e.feet;
+      if (f.tier === 1) legExtra += `<rect x="${legX - 1}" y="155" width="${legW + 2}" height="18" rx="4" fill="${f.color}"/><rect x="${legX - 1}" y="158" width="${legW + 2}" height="3" fill="#FF6B5E"/>`;
+      else legExtra += glow(f, `<rect x="${legX - 2}" y="163" width="${legW + 13}" height="11" rx="5" fill="${f.color}"/><rect x="${legX - 2}" y="171" width="${legW + 13}" height="4" rx="2" fill="#fff"/>` +
+        (f.tier >= 3 ? `<path d="M${legX + 1} 168Q${legX + legW / 2 + 5} 164 ${legX + legW + 8} 169" stroke="#FFD60A" stroke-width="2" fill="none" stroke-linecap="round"/>` : ''));
+    }
+    const legGroup = (cls) => `<g class="${cls}" style="transform-origin:100px 118px;"><rect x="${legX.toFixed(1)}" y="118" width="${legW}" height="55" rx="${legW / 2}" fill="${level.color}"/>${legExtra}</g>`;
+
+    // 몸통 위에 덮는 옷
+    let torsoOverlay = '';
+    if (e.torso) {
+      const t = e.torso;
+      const x = (100 - torsoW / 2).toFixed(1);
+      if (t.tier === 1) {
+        torsoOverlay = `<rect x="${x}" y="66" width="${torsoW}" height="46" rx="12" fill="${t.color}" opacity="0.93"/><line x1="100" y1="68" x2="100" y2="110" stroke="rgba(0,0,0,.25)" stroke-width="2"/>`;
+      } else {
+        torsoOverlay = glow(t, `<rect x="${x}" y="60" width="${torsoW}" height="60" rx="16" fill="${t.color}"/><rect x="${x}" y="88" width="${torsoW}" height="5" fill="#fff" opacity=".35"/>` +
+          (t.tier >= 3 ? `<line x1="100" y1="62" x2="100" y2="118" stroke="#fff" stroke-opacity=".75" stroke-width="2"/>` : '') +
+          (t.tier >= 4 ? `<circle cx="100" cy="64" r="4.5" fill="#FFD60A"/>` : ''));
+      }
+    }
+
+    // 팔에 붙는 것들 (팔토시 / 손목 / 손에 든 것)
+    const armX = 100 - armW / 2;
+    let armExtra = '';
+    if (e.arms) {
+      armExtra += `<rect x="${(armX - 1.5).toFixed(1)}" y="70" width="${armW + 3}" height="26" rx="${(armW + 3) / 2}" fill="${e.arms.color}" opacity=".93"/>` +
+        (e.arms.tier >= 2 ? `<rect x="${(armX - 1.5).toFixed(1)}" y="80" width="${armW + 3}" height="3" fill="#fff" opacity=".6"/>` : '');
+    }
+    if (e.wrist) {
+      armExtra += e.wrist.tier === 1
+        ? `<rect x="${(armX - 2).toFixed(1)}" y="100" width="${armW + 4}" height="6" rx="3" fill="${e.wrist.color}"/>`
+        : `<rect x="${(armX - 2).toFixed(1)}" y="99" width="${armW + 4}" height="9" rx="3" fill="#111" stroke="${e.wrist.color}" stroke-width="1.6"/>`;
+    }
+    const handItem = e.hand
+      ? (e.hand.tier === 1
+        ? `<rect x="96" y="108" width="8" height="15" rx="3" fill="${e.hand.color}"/><rect x="97.5" y="105" width="5" height="4" rx="1.5" fill="#fff" opacity=".85"/>`
+        : `<rect x="95.5" y="108" width="9" height="16" rx="2.5" fill="${e.hand.color}"/><path d="M101 111l-3 5h2.5l-1.5 5 4.5-6.5h-3z" fill="#1a1a1a"/>`)
+      : '';
+
+    // 머리 위 / 얼굴 / 목
+    let headItem = '';
+    if (e.head) {
+      const h = e.head;
+      if (h.tier === 1) headItem = `<rect x="80" y="27" width="40" height="7" rx="3.5" fill="${h.color}"/>`;
+      else if (h.tier === 2) headItem = `<path d="M79 33A21 19 0 0 1 121 33Z" fill="${h.color}"/><rect x="99" y="31" width="30" height="5" rx="2.5" fill="${h.color}" opacity=".8"/>`;
+      else if (h.tier === 3) headItem = glow(h, `<path d="M79 31A21 17 0 0 1 121 31Z" fill="${h.color}"/><rect x="78" y="30" width="44" height="3" fill="rgba(0,0,0,.3)"/><rect x="99" y="30" width="32" height="5" rx="2.5" fill="#fff"/>`);
+      else headItem = glow(h, `<path d="M80 31L82 12L91 21L100 6L109 21L118 12L120 31Z" fill="#FFD60A" stroke="#B8860B" stroke-width="1.5" stroke-linejoin="round"/><circle cx="100" cy="22" r="2.6" fill="#FF4D6D"/>`);
+    }
+    let faceItem = '';
+    if (e.face) {
+      const f = e.face;
+      if (f.tier === 1) faceItem = `<circle cx="91" cy="41" r="5.5" fill="none" stroke="${f.color}" stroke-width="2"/><circle cx="109" cy="41" r="5.5" fill="none" stroke="${f.color}" stroke-width="2"/><line x1="96" y1="41" x2="104" y2="41" stroke="${f.color}" stroke-width="2"/>`;
+      else if (f.tier === 2) faceItem = `<rect x="80" y="36" width="40" height="10" rx="5" fill="${f.color}"/><rect x="84" y="38" width="10" height="2" fill="#fff" opacity=".4"/>`;
+      else faceItem = glow(f, `<rect x="78" y="34" width="44" height="14" rx="7" fill="${f.color}"/><rect x="81" y="37" width="38" height="8" rx="4" fill="#0d2233"/><rect x="86" y="39" width="10" height="2" fill="#fff" opacity=".6"/>`);
+    }
+    let neckItem = '';
+    if (e.neck) {
+      neckItem = `<rect x="88" y="56" width="24" height="8" rx="4" fill="${e.neck.color}"/>` +
+        (e.neck.tier >= 2 ? `<rect x="104" y="60" width="7" height="22" rx="3" fill="${e.neck.color}"/>` : '');
+    }
+
+    return `<svg viewBox="0 0 200 200" width="${px}" height="${px}" style="transform: scaleY(${heightScale}); transform-origin: bottom center;">
+      <defs><filter id="rg-glow" x="-40%" y="-40%" width="180%" height="180%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+      <g class="runner-bob">
+        ${behind}
+        ${legGroup('runner-leg-back')}
+        ${legGroup('runner-leg-front')}
+        <rect x="${(100 - torsoW / 2).toFixed(1)}" y="60" width="${torsoW}" height="60" rx="16" fill="${level.color}"/>
+        ${torsoOverlay}
+        <g class="runner-arm-back" style="transform-origin:100px 68px;">
+          <rect x="${armX.toFixed(1)}" y="68" width="${armW}" height="45" rx="${armW / 2}" fill="#F4C6A0"/>${armExtra}
+        </g>
+        <g class="runner-arm-front" style="transform-origin:100px 68px;">
+          <rect x="${armX.toFixed(1)}" y="68" width="${armW}" height="45" rx="${armW / 2}" fill="#F4C6A0"/>${armExtra}${handItem}
+        </g>
+        <circle cx="100" cy="42" r="20" fill="#F4C6A0"/>
+        ${neckItem}${faceItem}${headItem}
+      </g>
+    </svg>`;
+  }
+
+  function fmtKm(km) { return (Math.round(km * 10) / 10).toFixed(1); }
 
   const NICK_ADJ = ['번개', '질풍', '폭풍', '무적', '씩씩한', '날쌘', '용감한', '유쾌한', '신비한', '화끈한', '조용한', '엉뚱한'];
   const NICK_NOUN = ['치타', '표범', '여우', '독수리', '다람쥐', '늑대', '호랑이', '사자', '토끼', '매', '거북이', '두더지'];
@@ -108,6 +298,12 @@
   let paceSplits = [];       // 이번 러닝의 구간별 페이스 기록 (완료 화면 그래프용)
   let lastSplitMeters = 0;
   let lastSplitTime = 0;
+  let splitMeta = [];        // 구간별 { startM, endM, start:{lat,lng}, end:{lat,lng} } - 러닝 분석(느려진 위치 찾기)용
+  let stopEvents = [];       // 멈춰 섰던 곳 { lat, lng, sec, atM }
+  let lastSplitPos = null;
+  let lastMovingAt = null;
+  let lastMovingPos = null;
+  let stopSecSinceSplit = 0; // 현재 구간에서 멈춰 있던 시간(초) - 구간 "이동 페이스" 계산용
 
   const $ = (id) => document.getElementById(id);
   function showScreen(id) {
@@ -281,7 +477,12 @@
         paceSplits = [];
         lastSplitMeters = 0;
         lastSplitTime = Date.now();
-        lastItemMilestone = 0;
+        splitMeta = [];
+        stopEvents = [];
+        lastSplitPos = lastPos ? { lat: lastPos.lat, lng: lastPos.lng } : null;
+        lastMovingAt = null;
+        lastMovingPos = null;
+        stopSecSinceSplit = 0;
         announce('출발할게요.');
         Music.startForRun();
         startGpsTracking();
@@ -509,9 +710,21 @@
     const isMoving = speed > 0.3 || isRealMovement;
 
     if (isRealMovement) traveledMeters += movedMeters;
-    if (traveledMeters - lastItemMilestone >= 3000) {
-      lastItemMilestone = Math.floor(traveledMeters / 3000) * 3000;
-      awardRandomItem();
+
+    // 멈춰 섰다가 다시 움직인 경우(신호 대기·잠깐 쉬기 등)를 기록 - 러닝 종료 후 "어디서 멈췄는지" 분석에 씀.
+    // 정지 중엔 GPS 값이 안 올 수도 있어서, "다시 움직인 순간의 시간 공백"으로 판단함
+    if (isMoving) {
+      const nowMs = Date.now();
+      if (lastMovingAt && lastMovingPos) {
+        const gapSec = (nowMs - lastMovingAt) / 1000;
+        const gapDist = haversine(lastMovingPos, cur);
+        if (gapSec >= 8 && gapDist / gapSec < 1.0) {
+          stopEvents.push({ lat: lastMovingPos.lat, lng: lastMovingPos.lng, sec: Math.round(gapSec), atM: traveledMeters });
+          stopSecSinceSplit += gapSec;
+        }
+      }
+      lastMovingAt = nowMs;
+      lastMovingPos = { lat: cur.lat, lng: cur.lng };
     }
 
     // 방향: 나침반이 있으면 그걸 최우선으로(제일 반응이 빠름), 없으면 기기 heading,
@@ -530,13 +743,23 @@
     lastPos = cur;
     Music.onSpeedUpdate(speed);
 
-    // 250m마다 그 구간 페이스를 기록해서 완료 화면 그래프에 씀
+    // 250m마다 그 구간 페이스와 위치를 기록해서 완료 화면 그래프/분석에 씀
     if (traveledMeters - lastSplitMeters >= 250) {
       const segKm = (traveledMeters - lastSplitMeters) / 1000;
       const segMin = (Date.now() - lastSplitTime) / 60000;
-      if (segKm > 0 && segMin > 0) paceSplits.push(segMin / segKm);
+      if (segKm > 0 && segMin > 0) {
+        paceSplits.push(segMin / segKm);
+        // 멈춰 있던 시간을 뺀 "달린 페이스" - 신호 대기 때문이 아니라 진짜로 속도가 떨어진 구간을 찾을 때 씀
+        const movingMin = Math.max(segMin - stopSecSinceSplit / 60, segMin * 0.3);
+        splitMeta.push({
+          startM: lastSplitMeters, endM: traveledMeters, movingPace: movingMin / segKm,
+          start: lastSplitPos || { lat: cur.lat, lng: cur.lng }, end: { lat: cur.lat, lng: cur.lng },
+        });
+      }
+      stopSecSinceSplit = 0;
       lastSplitMeters = traveledMeters;
       lastSplitTime = Date.now();
+      lastSplitPos = { lat: cur.lat, lng: cur.lng };
     }
 
     const progress = route ? Math.min(traveledMeters / route.distanceMeters, 1) : 0;
@@ -566,8 +789,14 @@
     const elapsedMin = elapsedSec / 60;
     const paceMinPerKm = km > 0.05 ? elapsedMin / km : 0;
 
+    // 아이템은 러닝 "중"에는 주지 않고, 끝난 뒤 누적 거리에 따라 해금돼요 (누적 거리는 아래에서 서버에 더하기 전 값 기준)
+    const prevKm = getTotalRunKm();
+    const gainedKm = km > 0.02 ? km : 0;
+    const newItems = getNewlyUnlocked(prevKm, gainedKm);
+
     if (currentUser && km > 0.02) {
       Auth.addDistance(currentUser.uid, km).then(() => {
+        cachedProfile = cachedProfile || {};
         cachedProfile.distanceRunKm = (cachedProfile.distanceRunKm || 0) + km;
         refreshGoalHeader();
       }).catch(console.warn);
@@ -583,13 +812,259 @@
       }).catch(console.warn);
     }
 
-    announce(manual ? '러닝을 종료했어요. 수고했어요.' : '목표 거리에 도착했어요! 수고했어요.');
+    let doneText = manual ? '러닝을 종료했어요. 수고했어요.' : '목표 거리에 도착했어요! 수고했어요.';
+    if (newItems.length) doneText += ` 새 아이템, ${newItems.map((i) => i.name).join(', ')} 해금했어요!`;
+    announce(doneText);
     Music.pause();
 
+    renderFinishNewItems(newItems, prevKm, gainedKm);
     showFinishScreen({ km, elapsedSec, paceMinPerKm });
   }
 
+  /* ---------------- 러닝 분석: 느려진 곳 / 멈춘 곳 + 그 근처 가게·건물 ----------------
+   * 250m 구간마다 페이스와 GPS 위치를 기록해두고(paceSplits / splitMeta),
+   * 러닝이 끝나면 "속도가 점점 느려진 구간"과 "멈춰 섰던 곳"을 찾아서
+   * 그 위치 근처의 가게·건물 이름(카카오 로컬 API, /api/place-near)으로 설명해줘요.
+   */
+  function meanOf(arr) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0; }
+
+  // 앞뒤 한 칸씩 평균 - 250m 구간 페이스의 GPS 잡음을 줄여서 "진짜로 점점 느려지는 흐름"만 찾기 위함
+  function smoothArr(arr) {
+    return arr.map((_, i) => meanOf(arr.slice(Math.max(0, i - 1), Math.min(arr.length, i + 2))));
+  }
+
+  function buildRunInsights() {
+    const n = paceSplits.length;
+    const metas = splitMeta;
+    const list = [];
+    const mid = (m) => ({ lat: (m.start.lat + m.end.lat) / 2, lng: (m.start.lng + m.end.lng) / 2 });
+
+    if (n >= 3 && metas.length === n) {
+      // 1) 속도가 점점 느려진 구간: 페이스 값이 계속 커지는(=느려지는) 흐름이 10% 이상 이어진 곳
+      const moving = metas.map((m, i) => m.movingPace || paceSplits[i]); // 멈춘 시간 뺀 페이스
+      const sm = smoothArr(moving);
+      const slowdowns = [];
+      let i = 0;
+      while (i < n - 1) {
+        let j = i;
+        while (j + 1 < n && sm[j + 1] >= sm[j] * 0.985) j++;
+        let lo = i;
+        for (let k = i; k <= j; k++) if (sm[k] < sm[lo]) lo = k;
+        let hi = lo;
+        for (let k = lo; k <= j; k++) if (sm[k] > sm[hi]) hi = k;
+        const rise = sm[hi] / sm[lo];
+        if ((hi - lo >= 2 && rise >= 1.10) || (hi - lo >= 1 && rise >= 1.22)) {
+          slowdowns.push({ from: lo, to: hi, rise, startPace: sm[lo], endPace: sm[hi] });
+        }
+        i = j + 1;
+      }
+      slowdowns.sort((a, b) => b.rise - a.rise).slice(0, 3).forEach((s) => {
+        const m = metas[s.to]; // 가장 느려진 지점(끝)의 위치 근처를 설명에 씀
+        list.push({
+          kind: 'slow', ...mid(m),
+          fromM: metas[s.from].startM, toM: m.endM, atM: (m.startM + m.endM) / 2,
+          startPace: s.startPace, endPace: s.endPace,
+        });
+      });
+
+      // 2) 가장 빨랐던 곳 (평균보다 8% 이상 빠를 때만)
+      const avg = meanOf(moving);
+      const minIdx = moving.indexOf(Math.min(...moving));
+      if (n >= 4 && moving[minIdx] < avg * 0.92) {
+        const m = metas[minIdx];
+        list.push({ kind: 'fast', ...mid(m), atM: (m.startM + m.endM) / 2, pace: moving[minIdx] });
+      }
+    }
+
+    // 3) 멈춰 섰던 곳 (신호 대기 등) - 가까운 것끼리 합치고, 느려진 구간과 겹치면 그 설명에 합침
+    const merged = [];
+    stopEvents.forEach((s) => {
+      const prev = merged[merged.length - 1];
+      if (prev && haversine(prev, s) < 40) prev.sec += s.sec;
+      else merged.push({ ...s });
+    });
+    merged.filter((s) => s.sec >= 10).sort((a, b) => b.sec - a.sec).slice(0, 2).forEach((s) => {
+      const near = list.find((x) => x.kind === 'slow' && haversine(x, s) < 100);
+      if (near) near.stopSec = (near.stopSec || 0) + s.sec;
+      else list.push({ kind: 'stop', lat: s.lat, lng: s.lng, atM: s.atM, sec: s.sec });
+    });
+
+    list.sort((a, b) => a.atM - b.atM);
+    return list.slice(0, 5);
+  }
+
+  async function fetchPlacesNear(points) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 9000);
+    try {
+      const res = await fetch('/api/place-near', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ points }),
+        signal: controller.signal,
+      });
+      if (!res.ok) return [];
+      const json = await res.json();
+      return Array.isArray(json.places) ? json.places : [];
+    } catch (e) {
+      console.warn('[러닝 분석] 주변 장소 조회 실패', e);
+      return [];
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // "GS25 과천점(편의점) 근처" / 장소를 못 찾으면 "1.25km 지점 부근"
+  function insightWhereHtml(ins, place) {
+    if (place && place.name) {
+      const showCat = place.category && place.category !== '건물' && !place.name.includes(place.category);
+      const cat = showCat ? ` <span class="cat">${escapeHtml(place.category)}</span>` : '';
+      const close = ins.kind === 'stop' && place.distance <= 30;
+      return `<b>${escapeHtml(place.name)}</b>${cat} ${close ? '앞' : '근처'}`;
+    }
+    return `<b>${(ins.atM / 1000).toFixed(2)}km</b> 지점 부근`;
+  }
+
+  function insightTextHtml(ins, place) {
+    const where = insightWhereHtml(ins, place);
+    if (ins.kind === 'slow') {
+      const range = `${(ins.fromM / 1000).toFixed(2)}~${(ins.toM / 1000).toFixed(2)}km 구간`;
+      let t = `${where}에서 속도가 점점 느려졌어요 <span class="sub">${range}에서 ${fmtPace(ins.startPace)} → ${fmtPace(ins.endPace)}/km</span>`;
+      if (ins.stopSec) t += ` <span class="sub">(중간에 ${ins.stopSec}초 멈추기도 했어요)</span>`;
+      return t;
+    }
+    if (ins.kind === 'stop') {
+      return `${where}에서 <b>${ins.sec}초</b> 멈춰 섰어요 <span class="sub">신호 대기나 잠깐 쉰 구간으로 보여요</span>`;
+    }
+    return `${where}에서 가장 빠르게 달렸어요 <span class="sub">${fmtPace(ins.pace)}/km</span>`;
+  }
+
+  const INSIGHT_COLOR = { slow: 'var(--amber)', stop: 'var(--alert)', fast: 'var(--go)' };
+
+  function renderInsightRows(container, insights, places, loading) {
+    const rows = [];
+    insights.forEach((ins, i) => {
+      rows.push(`<div class="row"><span class="insight-num" style="background:${INSIGHT_COLOR[ins.kind]}">${i + 1}</span><span class="text">${insightTextHtml(ins, places[i])}</span></div>`);
+    });
+    if (!insights.some((x) => x.kind === 'slow' || x.kind === 'stop')) {
+      rows.push('<div class="row"><span class="dot" style="background:var(--go)"></span><span class="text">눈에 띄게 느려지거나 멈춘 구간 없이 <b>꾸준히</b> 달렸어요</span></div>');
+    }
+
+    // 전반 vs 후반 흐름
+    const n = paceSplits.length;
+    if (n >= 4) {
+      const half = Math.floor(n / 2);
+      const first = meanOf(paceSplits.slice(0, half));
+      const second = meanOf(paceSplits.slice(half));
+      if (second >= first * 1.05) {
+        rows.push(`<div class="row"><span class="dot" style="background:var(--amber)"></span><span class="text">후반으로 갈수록 속도가 점점 느려졌어요 <span class="sub">전반 ${fmtPace(first)} → 후반 ${fmtPace(second)}/km</span></span></div>`);
+      } else if (second <= first * 0.95) {
+        rows.push(`<div class="row"><span class="dot" style="background:var(--go)"></span><span class="text">후반에 오히려 속도를 끌어올렸어요 <span class="sub">전반 ${fmtPace(first)} → 후반 ${fmtPace(second)}/km</span></span></div>`);
+      }
+    }
+    rows.push(`<div class="row"><span class="dot" style="background:var(--mute)"></span><span class="text">전체 평균 페이스는 <b>${fmtPace(meanOf(paceSplits))}/km</b>였어요</span></div>`);
+    if (loading) rows.push('<div class="analysis-loading">주변 가게·건물을 확인하는 중…</div>');
+    container.innerHTML = rows.join('');
+  }
+
+  function startPlaceLookup(insights, token, container) {
+    if (!insights.length) return;
+    fetchPlacesNear(insights.map((x) => ({ lat: x.lat, lng: x.lng }))).then((places) => {
+      if (token !== analysisToken) return; // 그 사이에 새 러닝이 시작됐거나 화면이 바뀜
+      renderInsightRows(container, insights, places, false);
+    });
+  }
+
+  // A) 거리별 페이스 - 곡선 + 영역, 눈금/축, 평균선, 250m마다 점, 느려진/멈춘/빠른 곳에 번호 표시 (위로 갈수록 빠름)
+  function renderFinishChartA(insights) {
+    const el = $('finish-chart-a');
+    const n = paceSplits.length;
+    const metas = splitMeta.length === n
+      ? splitMeta
+      : paceSplits.map((_, i) => ({ startM: i * 250, endM: (i + 1) * 250 }));
+    const totalM = Math.max(metas[n - 1].endM, 1);
+    const avg = meanOf(paceSplits);
+    const minP = Math.min(...paceSplits), maxP = Math.max(...paceSplits);
+
+    const W = 340, H = 200, PADL = 40, PADR = 40, PADT = 26, PADB = 28;
+    const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
+    const pad = Math.max((maxP - minP) * 0.25, 0.2);
+    const lo = minP - pad, hi = maxP + pad;
+    const xFor = (m) => PADL + (Math.min(Math.max(m, 0), totalM) / totalM) * plotW;
+    const yFor = (p) => PADT + ((p - lo) / (hi - lo)) * plotH;
+    const uid = 'fa' + Math.random().toString(36).slice(2, 7);
+
+    const dotPts = metas.map((m, i) => ({ x: xFor((m.startM + m.endM) / 2), y: yFor(paceSplits[i]) }));
+    const linePts = [{ x: PADL, y: dotPts[0].y }, ...dotPts, { x: PADL + plotW, y: dotPts[n - 1].y }];
+    const linePath = monotonePath(linePts);
+    const baseY = PADT + plotH;
+    const areaPath = `${linePath} L${(PADL + plotW).toFixed(1)} ${baseY} L${PADL} ${baseY} Z`;
+
+    const grid = [0, 1 / 3, 2 / 3, 1].map((t) => {
+      const y = PADT + t * plotH;
+      return `<line x1="${PADL}" y1="${y.toFixed(1)}" x2="${W - PADR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+              <text x="${PADL - 6}" y="${(y + 3).toFixed(1)}" font-size="9" fill="var(--mute)" text-anchor="end">${fmtPace(lo + t * (hi - lo))}</text>`;
+    }).join('');
+    const hint = `<text x="4" y="${PADT - 10}" font-size="8.5" fill="var(--mute)">▲ 빠름</text>
+                  <text x="4" y="${PADT + plotH + 19}" font-size="8.5" fill="var(--mute)">▼ 느림</text>`;
+
+    // x축: 거리 눈금
+    const step = totalM >= 3000 ? 1000 : totalM >= 1200 ? 500 : 250;
+    let ticks = '';
+    for (let m = 0; m <= totalM + 1; m += step) {
+      const x = xFor(m);
+      ticks += `<line x1="${x.toFixed(1)}" y1="${PADT}" x2="${x.toFixed(1)}" y2="${baseY}" stroke="var(--line)" stroke-width="1" opacity=".55"/>
+        <text x="${x.toFixed(1)}" y="${H - 8}" font-size="9" fill="var(--mute)" text-anchor="${m === 0 ? 'start' : 'middle'}">${m === 0 ? '0' : `${+(m / 1000).toFixed(2)}km`}</text>`;
+    }
+
+    // 느려진 구간 음영 + 멈춘 지점 세로선
+    let shades = '';
+    insights.forEach((ins) => {
+      if (ins.kind === 'slow') {
+        const x1 = xFor(ins.fromM), x2 = xFor(ins.toM);
+        shades += `<rect x="${x1.toFixed(1)}" y="${PADT}" width="${Math.max(x2 - x1, 3).toFixed(1)}" height="${plotH}" fill="#FFB238" opacity=".13"/>`;
+      } else if (ins.kind === 'stop') {
+        const x = xFor(ins.atM);
+        shades += `<line x1="${x.toFixed(1)}" y1="${PADT}" x2="${x.toFixed(1)}" y2="${baseY}" stroke="#FF6B5E" stroke-width="1.4" stroke-dasharray="3 3"/>`;
+      }
+    });
+
+    const avgY = yFor(avg);
+    const avgLine = `<line x1="${PADL}" y1="${avgY.toFixed(1)}" x2="${W - PADR + 2}" y2="${avgY.toFixed(1)}" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="4 4" opacity=".9"/>
+      <text x="${W - PADR + 5}" y="${(avgY - 1).toFixed(1)}" font-size="8.5" font-weight="800" fill="var(--amber)">평균</text>
+      <text x="${W - PADR + 5}" y="${(avgY + 9).toFixed(1)}" font-size="8.5" font-weight="700" fill="var(--amber)">${fmtPace(avg)}</text>`;
+
+    const dots = dotPts.map((p, i) => `<circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${paceSplits[i] <= avg ? 3 : 3}" fill="${paceSplits[i] <= avg ? 'var(--go)' : 'var(--amber)'}" stroke="var(--surface)" stroke-width="1.5"/>`).join('');
+
+    // 번호 마커 (분석 문장의 번호와 같음)
+    const markers = insights.map((ins, i) => {
+      let idx = metas.findIndex((m) => ins.atM >= m.startM && ins.atM <= m.endM);
+      if (idx < 0) idx = ins.atM > metas[n - 1].endM ? n - 1 : 0;
+      const x = xFor(ins.atM);
+      const y = Math.max(PADT + 8, yFor(paceSplits[idx]) - 13);
+      return `<circle cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="8" fill="${INSIGHT_COLOR[ins.kind]}" stroke="var(--surface)" stroke-width="2"/>
+        <text x="${x.toFixed(1)}" y="${(y + 3.4).toFixed(1)}" font-size="9.5" font-weight="800" fill="#10151A" text-anchor="middle">${i + 1}</text>`;
+    }).join('');
+
+    el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;">
+      <defs><linearGradient id="${uid}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%" stop-color="#2BD97C" stop-opacity=".36"/><stop offset="100%" stop-color="#2BD97C" stop-opacity="0"/>
+      </linearGradient></defs>
+      ${grid}${hint}${ticks}${shades}
+      <path d="${areaPath}" fill="url(#${uid})"/>
+      ${avgLine}
+      <path d="${linePath}" fill="none" stroke="var(--go)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+      ${dots}${markers}
+    </svg>
+    <div class="chart-legend">
+      <span><i style="background:var(--go)"></i>평균보다 빠름</span>
+      <span><i style="background:var(--amber)"></i>평균보다 느림</span>
+      <span><i class="shade"></i>점점 느려진 구간</span>
+      <span><i class="stopline"></i>멈춘 곳</span>
+    </div>`;
+  }
   function showFinishScreen({ km, elapsedSec, paceMinPerKm }) {
+    const token = ++analysisToken;
     $('finish-title').textContent = '오늘의 러닝 완료!';
     $('finish-distance').textContent = km.toFixed(2) + 'km';
     const min = Math.floor(elapsedSec / 60), sec = elapsedSec % 60;
@@ -654,40 +1129,12 @@
       $('finish-chart-c').innerHTML = '';
       analysisContainer.innerHTML = '';
     } else {
-      const formatPace = (p) => `${Math.floor(p)}'${Math.round((p - Math.floor(p)) * 60).toString().padStart(2, '0')}"`;
-      const avg = paceSplits.reduce((a, b) => a + b, 0) / paceSplits.length;
-      const minP = Math.min(...paceSplits);
-      const maxP = Math.max(...paceSplits);
-      const worstIdx = paceSplits.indexOf(maxP);
-      const bestIdx = paceSplits.indexOf(minP);
-      const range = maxP - minP || 1;
+      const formatPace = fmtPace;
+      const avg = meanOf(paceSplits);
 
-      // A) 거리별 페이스 - 영역그래프 + 격자선 + 축 라벨 (빠를수록 위로 오게 그림)
-      {
-        const W = 320, H = 120, PADL = 34, PADR = 8, PADT = 10, PADB = 18;
-        const plotW = W - PADL - PADR, plotH = H - PADT - PADB;
-        const n = paceSplits.length;
-        const yFor = (p) => PADT + (1 - (p - minP) / range) * plotH;
-        const xFor = (i) => PADL + (n === 1 ? plotW / 2 : (i / (n - 1)) * plotW);
-        const linePts = paceSplits.map((p, i) => `${xFor(i).toFixed(1)},${yFor(p).toFixed(1)}`).join(' ');
-        const areaPts = `${xFor(0).toFixed(1)},${(PADT + plotH).toFixed(1)} ${linePts} ${xFor(n - 1).toFixed(1)},${(PADT + plotH).toFixed(1)}`;
-        const gridLines = [0, 0.5, 1].map((t) => {
-          const y = PADT + t * plotH;
-          const pace = maxP - t * range;
-          return `<line x1="${PADL}" y1="${y.toFixed(1)}" x2="${W - PADR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
-                  <text x="${PADL - 5}" y="${(y + 3).toFixed(1)}" font-size="8.5" fill="var(--mute)" text-anchor="end">${formatPace(pace)}</text>`;
-        }).join('');
-        const xLabels = `<text x="${PADL}" y="${H - 3}" font-size="8.5" fill="var(--mute)">0km</text>
-          <text x="${W - PADR}" y="${H - 3}" font-size="8.5" fill="var(--mute)" text-anchor="end">${(n * 0.25).toFixed(2)}km</text>`;
-        $('finish-chart-a').innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
-          ${gridLines}
-          <polygon points="${areaPts}" fill="var(--go)" opacity="0.18"/>
-          <polyline points="${linePts}" fill="none" stroke="var(--go)" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
-          <circle cx="${xFor(worstIdx).toFixed(1)}" cy="${yFor(maxP).toFixed(1)}" r="4" fill="var(--amber)"/>
-          <circle cx="${xFor(bestIdx).toFixed(1)}" cy="${yFor(minP).toFixed(1)}" r="4" fill="#4FE3A0"/>
-          ${xLabels}
-        </svg>`;
-      }
+      // 느려진 곳/멈춘 곳/빨랐던 곳을 찾아서 그래프에 번호로 표시하고, 아래 설명 문장과 짝지음
+      const insights = buildRunInsights();
+      renderFinishChartA(insights);
 
       // B) 페이스 분포 히스토그램 - 15초 단위로 구간을 나눠서 각 구간에 몇 개 세그먼트가 있었는지
       {
@@ -768,20 +1215,8 @@
         $('finish-chart-c').innerHTML = '';
       }
 
-      const rows = [];
-      if (maxP > avg * 1.1) {
-        const startKm = (worstIdx * 0.25).toFixed(2);
-        const endKm = ((worstIdx + 1) * 0.25).toFixed(2);
-        const diffSec = Math.round((maxP - avg) * 60);
-        rows.push(`<div class="row"><span class="dot" style="background:var(--amber)"></span><span class="text"><b>${startKm}~${endKm}km</b> 구간에서 가장 처졌어요 - 평균보다 <b>${diffSec}초/km</b> 느렸어요 (${formatPace(maxP)}/km)</span></div>`);
-      }
-      if (minP < avg * 0.9) {
-        const startKm = (bestIdx * 0.25).toFixed(2);
-        const endKm = ((bestIdx + 1) * 0.25).toFixed(2);
-        rows.push(`<div class="row"><span class="dot" style="background:#4FE3A0"></span><span class="text"><b>${startKm}~${endKm}km</b> 구간이 가장 빨랐어요 (${formatPace(minP)}/km)</span></div>`);
-      }
-      rows.push(`<div class="row"><span class="dot" style="background:var(--mute)"></span><span class="text">전체 평균 페이스는 <b>${formatPace(avg)}/km</b>였어요</span></div>`);
-      analysisContainer.innerHTML = rows.join('');
+      renderInsightRows(analysisContainer, insights, [], insights.length > 0);
+      startPlaceLookup(insights, token, analysisContainer); // 가게·건물 이름은 조금 뒤에 채워짐
     }
 
     showScreen('screen-finish');
@@ -1062,11 +1497,9 @@
     const traveledKm = traveledMeters / 1000;
     $('stat-covered').textContent = traveledKm.toFixed(1) + 'km';
     const paceMinPerKm = traveledKm > 0.05 ? elapsedMin / traveledKm : 0;
-    if (paceMinPerKm > 0) {
-      const min = Math.floor(paceMinPerKm);
-      const sec = Math.round((paceMinPerKm - min) * 60);
-      $('stat-pace').textContent = `${min}'${sec.toString().padStart(2, '0')}"`;
-    }
+    // 처음 50m까지는 누적 평균을 못 내니까, 그동안은 GPS가 알려주는 현재 속도로 페이스를 바로 보여줌
+    const livePace = paceMinPerKm > 0 ? paceMinPerKm : (speedMs > 0.5 ? 1000 / speedMs / 60 : 0);
+    if (livePace > 0) $('stat-pace').textContent = fmtPace(livePace);
 
     const etaMin = speedMs > 0.3 ? (remainingKm * 1000) / speedMs / 60 : null;
     $('stat-eta').textContent = etaMin ? Math.round(etaMin) + '분' : '-';
@@ -1122,10 +1555,12 @@
     if (!currentUser) return;
     renderHomeHero();
     renderRunnerCharacter();
+    paintCachedHomePace(); // 앱을 켜자마자 지난번 계산한 페이스부터 바로 보여줌
     try {
       const runs = await Auth.listRuns(currentUser.uid, 20);
       renderHomeMap(runs);
       renderPaceChart(runs);
+      updateHomePace(runs);
       renderRunHistoryList(runs);
     } catch (err) { console.warn(err); }
     try {
@@ -1213,14 +1648,9 @@
   function renderRunnerCharacter() {
     const box = $('runner-character-box');
     if (!box) return;
-    const distanceKm = cachedProfile?.distanceRunKm || 0;
+    const distanceKm = getTotalRunKm();
     const level = getCharacterLevel(distanceKm);
     const nextLevel = CHAR_LEVELS[level.idx + 1];
-    const muscle = 1 + level.idx * 0.18;   // 레벨이 올라갈수록 팔다리가 굵어짐(근육)
-    const heightScale = 1 + level.idx * 0.05; // 레벨이 올라갈수록 키가 살짝 커짐
-    const legW = (10 * muscle).toFixed(1);
-    const armW = (7 * muscle).toFixed(1);
-    const torsoW = (32 * muscle).toFixed(1);
     const quote = level.quotes[Math.floor(Math.random() * level.quotes.length)];
 
     let progressHtml;
@@ -1237,44 +1667,164 @@
       progressHtml = `<div class="runner-progress-text" style="margin-top:8px;">누적 ${distanceKm.toFixed(1)}km · 최고 단계예요!</div>`;
     }
 
-    // 3km마다 얻은 아이템 중 부위별로 가장 최근 것만 캐릭터에 장착해서 보여줌
-    const equipped = getEquippedItems();
-    let accessorySvg = '';
-    if (equipped.torso) accessorySvg += `<rect x="${(100 - torsoW / 2).toFixed(1)}" y="78" width="${torsoW}" height="10" fill="${equipped.torso.color}" opacity="0.9"/>`;
-    if (equipped.arms) accessorySvg += `<rect x="${(100 - armW / 2 - 2).toFixed(1)}" y="70" width="${(Number(armW) + 4).toFixed(1)}" height="18" rx="4" fill="${equipped.arms.color}" opacity="0.85"/>`;
-    if (equipped.neck) accessorySvg += `<rect x="88" y="57" width="24" height="6" rx="3" fill="${equipped.neck.color}"/>`;
-    if (equipped.head) accessorySvg += `<rect x="82" y="27" width="36" height="7" rx="3.5" fill="${equipped.head.color}"/>`;
-    if (equipped.hand) accessorySvg += `<rect x="66" y="88" width="9" height="15" rx="3" fill="${equipped.hand.color}"/>`;
-    if (equipped.wrist) accessorySvg += `<circle cx="70" cy="105" r="5" fill="${equipped.wrist.color}"/>`;
-    if (equipped.legs) accessorySvg += `<rect x="${(100 - legW / 2 - 2).toFixed(1)}" y="140" width="${(Number(legW) + 4).toFixed(1)}" height="9" rx="4" fill="${equipped.legs.color}"/>`;
-
-    const ownedCount = getOwnedItemIds().length;
+    // 누적 거리로 해금된 아이템 중 부위별 최고 등급이 캐릭터에 장착돼서 보임
+    const equipped = getEquippedItems(distanceKm);
+    const unlockedCount = getUnlockedItems(distanceKm).length;
+    const next = getNextItem(distanceKm);
+    const nextText = next
+      ? `다음 아이템 <b>${escapeHtml(next.name)}</b>까지 ${fmtKm(next.unlockKm - distanceKm)}km`
+      : '모든 아이템을 해금했어요!';
 
     box.innerHTML = `
-      <svg viewBox="0 0 200 200" width="110" height="110" style="transform: scaleY(${heightScale}); transform-origin: bottom center;">
-        <g class="runner-bob">
-          <g class="runner-leg-back" style="transform-origin:100px 118px;">
-            <rect x="${(100 - legW / 2).toFixed(1)}" y="118" width="${legW}" height="55" rx="${legW / 2}" fill="${level.color}"/>
-          </g>
-          <g class="runner-leg-front" style="transform-origin:100px 118px;">
-            <rect x="${(100 - legW / 2).toFixed(1)}" y="118" width="${legW}" height="55" rx="${legW / 2}" fill="${level.color}"/>
-          </g>
-          <rect x="${(100 - torsoW / 2).toFixed(1)}" y="60" width="${torsoW}" height="60" rx="16" fill="${level.color}"/>
-          <g class="runner-arm-back" style="transform-origin:100px 68px;">
-            <rect x="${(100 - armW / 2).toFixed(1)}" y="68" width="${armW}" height="45" rx="${armW / 2}" fill="#F4C6A0"/>
-          </g>
-          <g class="runner-arm-front" style="transform-origin:100px 68px;">
-            <rect x="${(100 - armW / 2).toFixed(1)}" y="68" width="${armW}" height="45" rx="${armW / 2}" fill="#F4C6A0"/>
-          </g>
-          <circle cx="100" cy="42" r="20" fill="#F4C6A0"/>
-          ${accessorySvg}
-        </g>
-      </svg>
+      ${buildRunnerSvg(level, equipped, 110)}
       <div class="runner-level-name">${level.name}</div>
       ${progressHtml}
       <div class="runner-quote">${quote}</div>
-      <div class="runner-items-count">보유 아이템 ${ownedCount}/${ITEM_CATALOG.length}</div>
+      <button type="button" class="items-open-btn" data-open-items="1">
+        <span class="items-open-icon">${itemsBagIcon()}</span>
+        <span class="items-open-text">
+          <span class="items-open-title">아이템 창 · ${unlockedCount}/${ITEM_CATALOG.length}</span>
+          <span class="items-open-sub">${nextText}</span>
+        </span>
+        <span class="items-open-arrow">›</span>
+      </button>
     `;
+  }
+
+  function itemsBagIcon() {
+    return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8h12l1.5 12.5a1 1 0 0 1-1 1.1h-13a1 1 0 0 1-1-1.1z"/><path d="M9 8V6a3 3 0 0 1 6 0v2"/></svg>';
+  }
+
+  /* ---------------- 아이템 창 ---------------- */
+  function openItemsScreen() {
+    itemsFilter = 'all';
+    renderItemsScreen();
+    showScreen('screen-items');
+  }
+
+  function itemCardHtml(item, ctx) {
+    const { km, equipped, filter } = ctx;
+    const unlocked = item.unlockKm <= km + 1e-9;
+    const isEquipped = equipped[item.slot] && equipped[item.slot].id === item.id;
+    const tierInfo = TIER_INFO[item.tier];
+    const dimmed = filter !== 'all' && String(item.stepKm) !== filter;
+    let state;
+    if (isEquipped) state = '<div class="item-state on">장착중</div>';
+    else if (unlocked) state = '<div class="item-state evolved">진화됨</div>';
+    else state = `<div class="item-state lock">누적 ${item.unlockKm}km</div>`;
+    const remain = item.unlockKm - km;
+    const remainText = !unlocked && remain > 0 && remain <= 5 ? `<div class="item-meta">${fmtKm(remain)}km 남음</div>` : '';
+    return `
+      <div class="item-card tier-${item.tier}${unlocked ? '' : ' locked'}${isEquipped ? ' equipped' : ''}${dimmed ? ' dimmed' : ''}">
+        <span class="item-step-badge${item.stepKm === 5 ? ' km5' : ''}">${item.stepKm}km</span>
+        <div class="item-glyph">${itemGlyphSvg(item)}</div>
+        <div class="item-name">${escapeHtml(item.name)}</div>
+        <div class="item-tier-tag" style="color:${tierInfo.color}">${tierInfo.name}</div>
+        ${state}${remainText}
+      </div>`;
+  }
+
+  function renderItemsScreen() {
+    const km = getTotalRunKm();
+    const equipped = getEquippedItems(km);
+    const unlocked = getUnlockedItems(km);
+    const level = getCharacterLevel(km);
+    const next = getNextItem(km);
+
+    // 위쪽: 캐릭터 + 해금 현황 + 다음 아이템까지 진행도
+    let nextHtml;
+    if (next) {
+      const prevUnlock = next.order > 1 ? ITEM_CATALOG[next.order - 2].unlockKm : 0;
+      const pct = Math.max(0, Math.min(100, Math.round(((km - prevUnlock) / (next.unlockKm - prevUnlock)) * 100)));
+      nextHtml = `
+        <div class="items-next">
+          <div class="items-next-glyph">${itemGlyphSvg(next)}</div>
+          <div class="items-next-body">
+            <div class="items-next-title">다음 · ${escapeHtml(next.name)} <span class="item-step-badge inline${next.stepKm === 5 ? ' km5' : ''}">${next.stepKm}km</span></div>
+            <div class="goal-bar-track" style="height:8px;"><div class="goal-bar-fill" style="width:${pct}%;"></div></div>
+            <div class="items-next-sub">${fmtKm(next.unlockKm - km)}km 더 달리면 해금 (누적 ${next.unlockKm}km)</div>
+          </div>
+        </div>`;
+    } else {
+      nextHtml = '<div class="items-next-sub" style="margin-top:8px;">모든 아이템을 해금했어요! 대단해요.</div>';
+    }
+    $('items-hero').innerHTML = `
+      <div class="items-hero-row">
+        <div class="items-hero-char">${buildRunnerSvg(level, equipped, 118)}<div class="runner-level-name" style="font-size:15px; margin-top:2px;">${level.name}</div></div>
+        <div class="items-hero-info">
+          <div class="items-hero-count"><b>${unlocked.length}</b><span>/${ITEM_CATALOG.length} 해금</span></div>
+          <div class="items-hero-km">누적 ${km.toFixed(1)}km 달렸어요</div>
+          <div class="items-hero-hint">러닝이 끝나고 누적 거리가 쌓이면 자동으로 해금돼요. 같은 부위는 더 높은 등급이 나오면 진화해요.</div>
+        </div>
+      </div>
+      ${nextHtml}`;
+
+    // 필터 칩 (3km 아이템 / 5km 아이템 강조)
+    const chips = [
+      { key: 'all', label: '전체' },
+      { key: '3', label: `3km 아이템 ${ITEM_CATALOG.filter((i) => i.stepKm === 3).length}` },
+      { key: '5', label: `5km 아이템 ${ITEM_CATALOG.filter((i) => i.stepKm === 5).length}` },
+    ];
+    const chipsEl = $('items-filter-chips');
+    chipsEl.innerHTML = '';
+    chips.forEach((c) => {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'crosswalk-chip' + (c.key === itemsFilter ? ' active' : '');
+      b.textContent = c.label;
+      b.addEventListener('click', () => { itemsFilter = c.key; renderItemsScreen(); });
+      chipsEl.appendChild(b);
+    });
+
+    // 등급 범례
+    $('items-tier-legend').innerHTML = [1, 2, 3, 4].map((t) =>
+      `<span class="tier-legend-item"><i style="background:${TIER_INFO[t].color}"></i>${TIER_INFO[t].name}</span>`).join('');
+
+    // 부위별 진화 라인 (왼쪽이 낮은 등급 → 오른쪽으로 갈수록 좋은 아이템)
+    const ctx = { km, equipped, filter: itemsFilter };
+    $('items-slot-list').innerHTML = SLOT_ORDER.map((slot) => {
+      const chain = ITEM_CATALOG.filter((i) => i.slot === slot).sort((a, b) => a.tier - b.tier);
+      const have = chain.filter((i) => i.unlockKm <= km + 1e-9).length;
+      return `
+        <div class="items-slot-row">
+          <div class="items-slot-title">${SLOT_INFO[slot]} <small>${have}/${chain.length} 진화</small></div>
+          <div class="items-chain">
+            ${chain.map((it) => itemCardHtml(it, ctx)).join('<span class="chain-arrow">›</span>')}
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // 러닝 완료 화면 - 이번 러닝으로 새로 해금된 아이템 표시
+  function renderFinishNewItems(newItems, prevKm, gainKm) {
+    const card = $('finish-new-items');
+    if (!card) return;
+    if (!newItems.length) {
+      const next = getNextItem(prevKm + gainKm);
+      if (next && gainKm > 0) {
+        const remain = next.unlockKm - (prevKm + gainKm);
+        card.innerHTML = `<div class="section-card-head"><span class="badge">${itemsBagIcon()}</span>다음 아이템</div>
+          <div class="new-items-next">${escapeHtml(next.name)}까지 <b>${fmtKm(remain)}km</b> 남았어요</div>`;
+        card.classList.remove('hidden');
+      } else {
+        card.classList.add('hidden');
+      }
+      return;
+    }
+    card.innerHTML = `
+      <div class="section-card-head"><span class="badge">${itemsBagIcon()}</span>새 아이템 해금!</div>
+      <div class="new-items-row">
+        ${newItems.map((it) => `
+          <div class="item-card tier-${it.tier} equipped">
+            <span class="item-step-badge${it.stepKm === 5 ? ' km5' : ''}">${it.stepKm}km</span>
+            <div class="item-glyph">${itemGlyphSvg(it)}</div>
+            <div class="item-name">${escapeHtml(it.name)}</div>
+            <div class="item-tier-tag" style="color:${TIER_INFO[it.tier].color}">${TIER_INFO[it.tier].name}</div>
+          </div>`).join('')}
+      </div>
+      <button type="button" class="btn-secondary" id="btn-finish-items" style="margin-top:12px;">아이템 창에서 보기</button>`;
+    card.classList.remove('hidden');
+    $('btn-finish-items').addEventListener('click', openItemsScreen);
   }
 
   function renderHomeMap(runs) {
@@ -1327,24 +1877,269 @@
     });
   }
 
-  function renderPaceChart(runs) {
-    const container = $('pace-chart');
-    const withPace = runs.filter((r) => r.paceMinPerKm > 0).slice(0, 10).reverse();
-    if (!withPace.length) {
-      container.innerHTML = '<p class="onboard-sub" style="padding:8px 0;">아직 데이터가 없어요</p>';
+  /* ---------------- 페이스 표시 / 그래프 공용 도구 ---------------- */
+  function fmtPace(p) {
+    if (!(p > 0) || !isFinite(p)) return `-'--"`;
+    let m = Math.floor(p);
+    let s = Math.round((p - m) * 60);
+    if (s === 60) { m += 1; s = 0; }
+    return `${m}'${String(s).padStart(2, '0')}"`;
+  }
+
+  function fmtDuration(sec) {
+    sec = Math.max(Math.round(sec || 0), 0);
+    const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+    return h > 0
+      ? `${h}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`
+      : `${m}:${String(s).padStart(2, '0')}`;
+  }
+
+  // 점들을 부드럽게(튀지 않게) 이어주는 곡선 경로 - 단조 3차 보간이라 그래프가 값 사이에서 출렁이지 않음
+  function monotonePath(pts) {
+    const n = pts.length;
+    if (n === 0) return '';
+    const f = (v) => v.toFixed(1);
+    if (n === 1) return `M${f(pts[0].x)} ${f(pts[0].y)}`;
+    if (n === 2) return `M${f(pts[0].x)} ${f(pts[0].y)} L${f(pts[1].x)} ${f(pts[1].y)}`;
+    const dx = [], m = [], t = [];
+    for (let i = 0; i < n - 1; i++) {
+      dx[i] = pts[i + 1].x - pts[i].x;
+      m[i] = dx[i] === 0 ? 0 : (pts[i + 1].y - pts[i].y) / dx[i];
+    }
+    t[0] = m[0];
+    t[n - 1] = m[n - 2];
+    for (let i = 1; i < n - 1; i++) {
+      if (m[i - 1] * m[i] <= 0) t[i] = 0;
+      else {
+        const w1 = 2 * dx[i] + dx[i - 1], w2 = dx[i] + 2 * dx[i - 1];
+        t[i] = (w1 + w2) / (w1 / m[i - 1] + w2 / m[i]);
+      }
+    }
+    let d = `M${f(pts[0].x)} ${f(pts[0].y)}`;
+    for (let i = 0; i < n - 1; i++) {
+      const h = dx[i] / 3;
+      d += ` C${f(pts[i].x + h)} ${f(pts[i].y + t[i] * h)} ${f(pts[i + 1].x - h)} ${f(pts[i + 1].y - t[i + 1] * h)} ${f(pts[i + 1].x)} ${f(pts[i + 1].y)}`;
+    }
+    return d;
+  }
+
+  function runDate(r) {
+    return r.completedAt?.toDate ? r.completedAt.toDate() : null;
+  }
+
+  // 여러 기록의 거리 가중 평균 페이스 (총시간 / 총거리) - 기록마다 거리가 달라도 공정하게
+  function weightedAvgPace(runs) {
+    let km = 0, sec = 0;
+    runs.forEach((r) => {
+      const k = r.distanceKm || 0;
+      const s = r.durationSec || (r.paceMinPerKm > 0 ? r.paceMinPerKm * 60 * k : 0);
+      if (k > 0 && s > 0) { km += k; sec += s; }
+    });
+    if (km > 0) return sec / 60 / km;
+    const paces = runs.map((r) => r.paceMinPerKm).filter((p) => p > 0);
+    return paces.length ? paces.reduce((a, b) => a + b, 0) / paces.length : 0;
+  }
+
+  /* ---------------- 홈 화면: 앱을 켜자마자 보이는 페이스 요약 ---------------- */
+  const HOME_PACE_CACHE_KEY = 'run-pacer-home-pace-v1';
+
+  function paceSummaryFromRuns(runs) {
+    const withPace = runs.filter((r) => r.paceMinPerKm > 0);
+    if (!withPace.length) return null;
+    const last = withPace[0]; // listRuns는 최신순
+    const prev = withPace[1] || null;
+    return {
+      avg: weightedAvgPace(withPace),
+      last: last.paceMinPerKm,
+      best: Math.min(...withPace.map((r) => r.paceMinPerKm)),
+      deltaSec: prev ? Math.round((prev.paceMinPerKm - last.paceMinPerKm) * 60) : null, // +면 이전보다 빨라짐
+      count: withPace.length,
+    };
+  }
+
+  function paintHomePace(sum) {
+    const set = (id, v) => { const el = $(id); if (el) el.textContent = v; };
+    if (!sum) {
+      set('home-pace-avg', `-'--"`); set('home-pace-last', `-'--"`); set('home-pace-best', `-'--"`);
+      const d = $('home-pace-delta'); if (d) { d.textContent = ''; d.className = ''; }
       return;
     }
-    const paces = withPace.map((r) => r.paceMinPerKm);
+    set('home-pace-avg', fmtPace(sum.avg));
+    set('home-pace-last', fmtPace(sum.last));
+    set('home-pace-best', fmtPace(sum.best));
+    const d = $('home-pace-delta');
+    if (d) {
+      if (sum.deltaSec === null || Math.abs(sum.deltaSec) < 2) { d.textContent = ''; d.className = ''; }
+      else {
+        const faster = sum.deltaSec > 0;
+        d.textContent = `${faster ? '▲' : '▼'}${Math.abs(sum.deltaSec)}초`;
+        d.className = faster ? 'faster' : 'slower';
+      }
+    }
+  }
+
+  // 홈에 들어오자마자(서버 응답 기다리기 전에) 지난번 계산값부터 먼저 보여줌
+  function paintCachedHomePace() {
+    try {
+      const raw = localStorage.getItem(HOME_PACE_CACHE_KEY);
+      const c = raw ? JSON.parse(raw) : null;
+      if (c && (!currentUser || c.uid === currentUser.uid)) paintHomePace(c.sum);
+    } catch { /* 저장값이 깨졌으면 무시 */ }
+  }
+
+  function updateHomePace(runs) {
+    const sum = paceSummaryFromRuns(runs);
+    paintHomePace(sum);
+    try {
+      localStorage.setItem(HOME_PACE_CACHE_KEY, JSON.stringify({ uid: currentUser?.uid || null, sum }));
+    } catch { /* 저장 실패해도 화면엔 이미 표시됨 */ }
+  }
+
+  /* ---------------- 홈 화면: 최근 페이스 그래프 (자세한 버전) ----------------
+   * - 곡선 + 영역, 눈금선/축 라벨, 평균선, 점마다 페이스 값, 최고 기록 강조
+   * - 아래쪽엔 그날 거리 막대 + 날짜, 막대/점을 누르면 그 기록의 자세한 정보가 아래에 뜸
+   * (위로 갈수록 빠른 페이스)
+   */
+  function renderPaceChart(runs) {
+    const container = $('pace-chart');
+    const detailEl = $('pace-chart-detail');
+    const list = runs.filter((r) => r.paceMinPerKm > 0).slice(0, 12).reverse(); // 오래된 → 최신
+    if (!list.length) {
+      container.innerHTML = '<p class="onboard-sub" style="padding:8px 0; margin:0;">아직 데이터가 없어요. 첫 러닝을 해보세요!</p>';
+      if (detailEl) detailEl.innerHTML = '';
+      return;
+    }
+    const n = list.length;
+    const paces = list.map((r) => r.paceMinPerKm);
+    const avg = weightedAvgPace(list);
     const minP = Math.min(...paces), maxP = Math.max(...paces);
-    const W = 300, H = 100, PAD = 10;
-    const pts = paces.map((p, i) => {
-      const x = PAD + (i / Math.max(paces.length - 1, 1)) * (W - PAD * 2);
-      const y = maxP === minP ? H / 2 : PAD + ((p - minP) / (maxP - minP)) * (H - PAD * 2);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    }).join(' ');
-    container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="100%">
-      <polyline points="${pts}" fill="none" stroke="#2BD97C" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-    </svg>`;
+    const bestIdx = paces.indexOf(minP);
+    const last = list[n - 1];
+    const prev = n > 1 ? list[n - 2] : null;
+    const deltaSec = prev ? Math.round((prev.paceMinPerKm - last.paceMinPerKm) * 60) : null;
+
+    const W = 340, H = 216, PADL = 40, PADR = 40, PADT = 24;
+    const LINE_H = 116;                       // 페이스 곡선 영역 높이
+    const BAR_TOP = PADT + LINE_H + 16;       // 거리 막대 영역 시작
+    const BAR_H = 34;
+    const DATE_Y = BAR_TOP + BAR_H + 15;
+    const plotW = W - PADL - PADR;
+    const cw = plotW / n;
+    const pad = Math.max((maxP - minP) * 0.25, 0.2);
+    const lo = minP - pad, hi = maxP + pad;
+    const yFor = (p) => PADT + ((p - lo) / (hi - lo)) * LINE_H; // 빠를수록(작을수록) 위
+    const xFor = (i) => PADL + cw * (i + 0.5);
+    const maxKm = Math.max(...list.map((r) => r.distanceKm || 0), 0.1);
+    const uid = 'pc' + Math.random().toString(36).slice(2, 7);
+
+    const pts = list.map((r, i) => ({ x: xFor(i), y: yFor(r.paceMinPerKm) }));
+    const linePath = monotonePath(pts);
+    const baseY = PADT + LINE_H;
+    const areaPath = n > 1
+      ? `${linePath} L${pts[n - 1].x.toFixed(1)} ${baseY} L${pts[0].x.toFixed(1)} ${baseY} Z`
+      : '';
+
+    // 눈금선(4줄) + 왼쪽 페이스 라벨
+    const grid = [0, 1 / 3, 2 / 3, 1].map((t) => {
+      const y = PADT + t * LINE_H;
+      const p = lo + t * (hi - lo);
+      return `<line x1="${PADL}" y1="${y.toFixed(1)}" x2="${W - PADR}" y2="${y.toFixed(1)}" stroke="var(--line)" stroke-width="1"/>
+              <text x="${PADL - 6}" y="${(y + 3).toFixed(1)}" font-size="9" fill="var(--mute)" text-anchor="end">${fmtPace(p)}</text>`;
+    }).join('');
+    const arrowHint = `<text x="4" y="${PADT - 10}" font-size="8.5" fill="var(--mute)">▲ 빠름</text>
+                       <text x="4" y="${PADT + LINE_H + 19}" font-size="8.5" fill="var(--mute)">▼ 느림</text>`;
+
+    // 평균선
+    const avgY = yFor(avg);
+    const avgLine = `<line x1="${PADL}" y1="${avgY.toFixed(1)}" x2="${W - PADR + 2}" y2="${avgY.toFixed(1)}" stroke="var(--amber)" stroke-width="1.2" stroke-dasharray="4 4" opacity=".9"/>
+      <text x="${W - PADR + 5}" y="${(avgY - 1).toFixed(1)}" font-size="8.5" font-weight="800" fill="var(--amber)">평균</text>
+      <text x="${W - PADR + 5}" y="${(avgY + 9).toFixed(1)}" font-size="8.5" font-weight="700" fill="var(--amber)">${fmtPace(avg)}</text>`;
+
+    // 거리 막대 + 날짜
+    const bars = list.map((r, i) => {
+      const km = r.distanceKm || 0;
+      const h = Math.max((km / maxKm) * BAR_H, 2);
+      const bw = Math.min(cw * 0.5, 22);
+      const d = runDate(r);
+      const dateLabel = d ? `${d.getMonth() + 1}/${d.getDate()}` : '-';
+      const showKm = n <= 8;
+      return `<rect x="${(xFor(i) - bw / 2).toFixed(1)}" y="${(BAR_TOP + BAR_H - h).toFixed(1)}" width="${bw.toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="var(--go)" opacity=".28"/>
+        ${showKm ? `<text x="${xFor(i).toFixed(1)}" y="${(BAR_TOP + BAR_H - h - 3).toFixed(1)}" font-size="8" fill="var(--mute)" text-anchor="middle">${km.toFixed(1)}</text>` : ''}
+        <text x="${xFor(i).toFixed(1)}" y="${DATE_Y}" font-size="8.5" fill="var(--mute)" text-anchor="middle">${dateLabel}</text>`;
+    }).join('');
+    const barLabel = `<text x="${PADL - 6}" y="${BAR_TOP + BAR_H - 2}" font-size="8" fill="var(--mute)" text-anchor="end">km</text>`;
+
+    // 점 + 값 라벨 (기록이 많으면 최고/최신만 라벨)
+    const dots = list.map((r, i) => {
+      const p = r.paceMinPerKm;
+      const faster = p <= avg;
+      const isBest = i === bestIdx;
+      const isLast = i === n - 1;
+      const showLabel = n <= 7 || isBest || isLast;
+      const color = faster ? 'var(--go)' : 'var(--amber)';
+      return `${isBest ? `<circle cx="${pts[i].x.toFixed(1)}" cy="${pts[i].y.toFixed(1)}" r="9" fill="none" stroke="#FFD60A" stroke-width="1.5" opacity=".9"/>` : ''}
+        <circle cx="${pts[i].x.toFixed(1)}" cy="${pts[i].y.toFixed(1)}" r="4.2" fill="${color}" stroke="var(--surface)" stroke-width="2"/>
+        ${showLabel ? `<text x="${pts[i].x.toFixed(1)}" y="${(pts[i].y - (isBest ? 13 : 9)).toFixed(1)}" font-size="9" font-weight="700" fill="${isBest ? '#FFD60A' : 'var(--paper)'}" text-anchor="middle">${isBest ? '★ ' : ''}${fmtPace(p)}</text>` : ''}`;
+    }).join('');
+
+    // 터치 영역 + 선택 하이라이트
+    const hits = list.map((_, i) =>
+      `<rect data-idx="${i}" x="${(PADL + cw * i).toFixed(1)}" y="${PADT - 14}" width="${cw.toFixed(1)}" height="${(DATE_Y - PADT + 20).toFixed(1)}" fill="transparent" style="cursor:pointer"/>`).join('');
+
+    container.innerHTML = `
+      <div class="pace-summary">
+        <div class="pace-summary-item"><span>${fmtPace(avg)}</span><label>평균 페이스</label></div>
+        <div class="pace-summary-item"><span style="color:#FFD60A;">${fmtPace(minP)}</span><label>최고 기록</label></div>
+        <div class="pace-summary-item"><span class="${deltaSec === null || Math.abs(deltaSec) < 2 ? '' : deltaSec > 0 ? 'faster' : 'slower'}">${
+          deltaSec === null ? '-' : Math.abs(deltaSec) < 2 ? '비슷' : `${deltaSec > 0 ? '▲' : '▼'}${Math.abs(deltaSec)}초`
+        }</span><label>직전 대비</label></div>
+      </div>
+      <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block;">
+        <defs>
+          <linearGradient id="${uid}-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#2BD97C" stop-opacity=".38"/><stop offset="100%" stop-color="#2BD97C" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        ${grid}${arrowHint}
+        <rect id="${uid}-sel" x="0" y="${PADT - 14}" width="${cw.toFixed(1)}" height="${(DATE_Y - PADT + 20).toFixed(1)}" rx="8" fill="#fff" opacity="0"/>
+        ${bars}${barLabel}
+        ${n > 1 ? `<path d="${areaPath}" fill="url(#${uid}-fill)"/>` : ''}
+        ${avgLine}
+        <path d="${linePath}" fill="none" stroke="var(--go)" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+        ${dots}
+        ${hits}
+      </svg>`;
+
+    const selRect = container.querySelector(`#${uid}-sel`);
+    function select(i) {
+      const r = list[i];
+      selRect.setAttribute('x', (PADL + cw * i).toFixed(1));
+      selRect.setAttribute('opacity', '0.07');
+      const d = runDate(r);
+      const wd = ['일', '월', '화', '수', '목', '금', '토'];
+      const dateStr = d ? `${d.getMonth() + 1}월 ${d.getDate()}일 (${wd[d.getDay()]})` : '날짜 없음';
+      const km = r.distanceKm || 0;
+      const sec = r.durationSec || r.paceMinPerKm * 60 * km;
+      const diff = Math.round((avg - r.paceMinPerKm) * 60); // +면 평균보다 빠름
+      const vsAvg = Math.abs(diff) < 2
+        ? '평균과 비슷했어요'
+        : `평균보다 <b class="${diff > 0 ? 'faster' : 'slower'}">${Math.abs(diff)}초 ${diff > 0 ? '빨랐어요' : '느렸어요'}</b>`;
+      const badge = i === bestIdx ? '<span class="pace-best-tag">최고 기록</span>' : '';
+      if (detailEl) {
+        detailEl.innerHTML = `
+          <div class="pace-detail-head"><b>${dateStr}</b>${badge}</div>
+          <div class="pace-detail-grid">
+            <div><span>${km.toFixed(2)}km</span><label>거리</label></div>
+            <div><span>${fmtPace(r.paceMinPerKm)}</span><label>페이스/km</label></div>
+            <div><span>${fmtDuration(sec)}</span><label>시간</label></div>
+          </div>
+          <div class="pace-detail-vs">${vsAvg}</div>`;
+      }
+    }
+    container.querySelectorAll('rect[data-idx]').forEach((el) => {
+      el.addEventListener('click', () => select(Number(el.dataset.idx)));
+    });
+    select(n - 1);
   }
 
   function renderRunHistoryList(runs) {
@@ -1576,6 +2371,14 @@
       if (profileReturnScreen === 'screen-home') loadHomeScreen();
     });
     $('btn-go-run').addEventListener('click', () => showScreen('screen-setup'));
+    $('btn-home-items').addEventListener('click', openItemsScreen);
+    $('runner-character-box').addEventListener('click', (e) => {
+      if (e.target.closest('[data-open-items]')) openItemsScreen();
+    });
+    $('btn-items-back').addEventListener('click', () => {
+      showScreen('screen-home');
+      loadHomeScreen();
+    });
     $('btn-setup-back').addEventListener('click', () => {
       showScreen('screen-home');
       loadHomeScreen();
