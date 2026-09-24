@@ -3,6 +3,9 @@
   const FACE_KEY = 'run-pacer-face-photo';
   const COMEDY_KEY = 'run-pacer-comedy-mode';
   const VOICE_KEY = 'run-pacer-voice-key';
+  const VOICE_MUTE_KEY = 'run-pacer-voice-muted';
+  const PACE_INTERVAL_KEY = 'run-pacer-pace-interval-min'; // 0 = 끄기
+  let voiceMuted = false;
   const ARROW_MODE_KEY = 'run-pacer-arrow-mode'; // 'map' | 'ar'
   const NICKNAME_KEY = 'run-pacer-leaderboard-nickname';
   let analysisToken = 0;      // 러닝 분석(장소 조회) 비동기 결과가 오래된 화면을 덮어쓰지 않게 하는 토큰
@@ -105,13 +108,14 @@
   }
 
   /* ================= 걷는 캐릭터 =================
-   * - 캐릭터는 앱을 켜든 폰을 끄든 계속 걸어요: 기본 시간당 10m. 웹앱은 꺼져 있으면 실제로 실행되지 못하니까
+   * - 캐릭터는 앱을 켜든 폰을 끄든 계속 걸어요: 기본 하루 3m. 웹앱은 꺼져 있으면 실제로 실행되지 못하니까
    *   "마지막으로 확정한 시각(walkAt)부터 지금까지 흐른 실제 시간"으로 계산해서, 다시 열었을 때 그만큼 걸어 있어요.
    * - 아이템이 많을수록(등급이 높을수록) 걷는 속도가 빨라져요. 속도가 바뀌기 직전(러닝 종료로 아이템을 얻을 때)에
    *   그때까지 걸은 거리를 확정(settleWalk)해서, 예전 속도로 걸은 만큼은 그대로 인정돼요.
    * - 값은 Firestore users/{uid}.walkMeters / walkAt(ms)에 저장하고 기기(localStorage)에도 같이 둬요.
    */
-  const WALK_BASE_M_PER_HOUR = 10;
+  const WALK_BASE_M_PER_DAY = 3; // 아이템이 없을 때 하루에 걷는 거리(m)
+  const WALK_BASE_M_PER_HOUR = WALK_BASE_M_PER_DAY / 24;
   const WALK_TIER_BONUS = { 1: 0.04, 2: 0.06, 3: 0.09, 4: 0.12, 5: 0.25, 6: 0.35 }; // 아이템 하나당 걷기 속도 증가분
 
   function walkMultiplierFor(km, premiumIds) {
@@ -457,6 +461,7 @@
   let mapHelper = null;   // route.js의 renderOnMap 결과 (MapLibre)
   let watchId = null;
   let elapsedTimer = null; // 러닝 중 경과시간(스톱워치) 1초마다 갱신하는 인터벌
+  let paceAnnounceTimer = null; // 설정한 간격마다 페이스/거리를 음성으로 알려주는 인터벌
   let lastPos = null;
   let traveledMeters = 0;
   let startedAt = null;
@@ -579,6 +584,8 @@
     $('profile-face-preview').src = face || '';
     $('profile-goal-input').value = cachedProfile?.goalKm || '';
     $('profile-comedy-toggle').checked = localStorage.getItem(COMEDY_KEY) === '1';
+    $('profile-voice-toggle').checked = localStorage.getItem(VOICE_MUTE_KEY) !== '1';
+    renderPaceIntervalChips();
     $('profile-nickname-display').textContent = getOrCreateNickname();
     renderVoiceChips();
     renderArrowModeChips();
@@ -630,9 +637,29 @@
     });
   }
 
+  // 페이스/거리 음성 안내 간격 선택 칩 - 러닝 중이면 즉시 타이머를 다시 맞춤
+  function renderPaceIntervalChips() {
+    const saved = parseInt(localStorage.getItem(PACE_INTERVAL_KEY), 10) || 0;
+    const chipsEl = $('pace-interval-chips');
+    chipsEl.innerHTML = '';
+    const options = [{ key: 0, label: '끄기' }, { key: 1, label: '1분' }, { key: 3, label: '3분' }, { key: 5, label: '5분' }, { key: 10, label: '10분' }];
+    options.forEach((opt) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'crosswalk-chip' + (opt.key === saved ? ' active' : '');
+      chip.textContent = opt.label;
+      chip.addEventListener('click', () => {
+        localStorage.setItem(PACE_INTERVAL_KEY, String(opt.key));
+        renderPaceIntervalChips();
+        if (paceAnnounceTimer !== null || document.querySelector('.screen.active')?.id === 'screen-run') startPaceAnnounceTimer();
+      });
+      chipsEl.appendChild(chip);
+    });
+  }
+
   /* ---------------- 2. 목적지/거리 설정 ---------------- */
   function announce(text) {
-    Voice.speak(text);
+    if (!voiceMuted) Voice.speak(text);
     const el = $('voice-caption-text');
     if (el) el.textContent = text;
   }
@@ -1255,6 +1282,7 @@
   function finishRun(manual) {
     if (watchId) navigator.geolocation.clearWatch(watchId);
     if (elapsedTimer) { clearInterval(elapsedTimer); elapsedTimer = null; }
+    if (paceAnnounceTimer) { clearInterval(paceAnnounceTimer); paceAnnounceTimer = null; }
     stopArCamera();
     const km = traveledMeters / 1000;
     const elapsedSec = Math.round((Date.now() - startedAt) / 1000);
@@ -1734,7 +1762,7 @@
 
     if (dist < 40) {
       announcedTurnCount++;
-      Voice.speak(desc);
+      if (!voiceMuted) Voice.speak(desc);
     }
   }
 
@@ -1983,6 +2011,22 @@
     }
   }
 
+  // 설정한 분 간격마다 "N.N킬로미터, 페이스 M분 S초" 같은 문구를 음성으로 알려줌 (0분=끄기)
+  function startPaceAnnounceTimer() {
+    if (paceAnnounceTimer) { clearInterval(paceAnnounceTimer); paceAnnounceTimer = null; }
+    const min = parseInt(localStorage.getItem(PACE_INTERVAL_KEY), 10) || 0;
+    if (min <= 0) return;
+    paceAnnounceTimer = setInterval(() => {
+      if (!route || traveledMeters < 30) return;
+      const km = traveledMeters / 1000;
+      const elapsedMin = (Date.now() - startedAt) / 60000;
+      const pace = km > 0.05 ? elapsedMin / km : 0;
+      const distText = km < 1 ? `${Math.round(traveledMeters)}미터` : `${km.toFixed(1)}킬로미터`;
+      const paceText = pace > 0 ? `, 페이스 ${fmtPace(pace)}` : '';
+      announce(`${distText} 달렸어요${paceText}`);
+    }, min * 60000);
+  }
+
   function updateStats(progress, speedMs) {
     if (!route) return;
     const remainingKm = (route.distanceMeters / 1000) * (1 - progress);
@@ -2177,7 +2221,7 @@
       <div class="walker-top">
         <div class="walker-label">걸어서 모은 거리</div>
         <div class="walker-dist" data-walk-dist>${fmtWalkDist(currentWalkMeters())}</div>
-        <div class="walker-rate">시간당 ${(WALK_BASE_M_PER_HOUR * wmult).toFixed(1)}m · 아이템 ×${wmult.toFixed(2)}</div>
+        <div class="walker-rate">하루 ${(WALK_BASE_M_PER_DAY * wmult).toFixed(1)}m · 아이템 ×${wmult.toFixed(2)}</div>
       </div>
       <div class="runner-walk" style="--walk-dur:${walkDur}s;">${buildRunnerSvg(level, equipped, 110)}</div>
       <div class="runner-level-name">${level.name}</div>
@@ -2300,7 +2344,7 @@
         <div class="items-hero-info">
           <div class="items-hero-count"><b>${unlocked.length + getOwnedPremium().length}</b><span>/${ITEM_CATALOG.length + PREMIUM_ITEMS.length} 보유</span></div>
           <div class="items-hero-km">누적 ${km.toFixed(1)}km 달렸어요</div>
-          <div class="items-hero-walk">걷는 거리 <b data-walk-dist>${fmtWalkDist(currentWalkMeters())}</b><br/>시간당 ${(WALK_BASE_M_PER_HOUR * wmult).toFixed(1)}m (×${wmult.toFixed(2)})</div>
+          <div class="items-hero-walk">걷는 거리 <b data-walk-dist>${fmtWalkDist(currentWalkMeters())}</b><br/>하루 ${(WALK_BASE_M_PER_DAY * wmult).toFixed(1)}m (×${wmult.toFixed(2)})</div>
           <div class="items-hero-hint">아이템이 많고 등급이 높을수록 캐릭터가 더 빨리 걸어요.</div>
         </div>
       </div>
@@ -2730,6 +2774,7 @@
     Music.openDB().catch(console.warn);
     Voice.setComedyMode(localStorage.getItem(COMEDY_KEY) === '1');
     Voice.setVoiceKey(localStorage.getItem(VOICE_KEY) || null);
+    voiceMuted = localStorage.getItem(VOICE_MUTE_KEY) === '1';
     arModeEnabled = localStorage.getItem(ARROW_MODE_KEY) === 'ar';
 
     const introVideo = $('intro-video');
@@ -2889,6 +2934,7 @@
 
     $('btn-start-run').addEventListener('click', () => {
       $('btn-start-run').classList.add('hidden');
+      $('crosswalk-selector').classList.add('hidden');
       $('premium-run-banner').classList.add('hidden');
       requestCompassPermission();
       runCountdown();
@@ -2975,6 +3021,12 @@
       localStorage.setItem(COMEDY_KEY, on ? '1' : '0');
       Voice.setComedyMode(on);
       Voice.speak(on ? '웃긴 모드 켰습니다' : '웃긴 모드 껐어요');
+    });
+    $('profile-voice-toggle').addEventListener('change', (e) => {
+      const on = e.target.checked;
+      voiceMuted = !on;
+      localStorage.setItem(VOICE_MUTE_KEY, on ? '0' : '1');
+      if (on) Voice.speak('음성 안내를 켰어요');
     });
     $('btn-shuffle-nickname').addEventListener('click', async () => {
       const nick = generateRandomNickname();
